@@ -1,7 +1,8 @@
 1) Install ubuntu terminal using proot-distro using termux 
 2) Git installation
-3) Neovim
-4) Treesitter in lazy
+3) Java installation
+4) Neovim
+5) Treesitter in lazy
 
 1) Install ubuntu terminal using proot-distro using termux 
 proot-distro install -y ubuntu
@@ -51,7 +52,18 @@ git push -u origin main
 -- clone existing repository
 git clone git@github.com:username/repo-name.git
 
-3) Neovim
+3) Java deletion/installation
+--Deletion
+apt remove openjdk-17-jdk openjdk-17-jre
+apt purge openjdk-17-jdk openjdk-17-jre
+apt autoremove
+
+--Installation java 21 for Ubuntu Arm64
+apt update
+apt install openjdk-21-jdk
+apt java --version
+
+4) Neovim v.0.10.0
 -- Removal
 apt remove neovim
 
@@ -74,14 +86,14 @@ apt update
 apt install -y neovim
 neovim --version
 
-4) Treesitter in lazy
+5) Treesitter in lazy compatible with NVim 0.10.0
 use {
 	"nvim-treesitter/nvim-treesitter",
 	tag = "v0.9.2",
 	run = ":TSUpdate"
 }
 
-5) Console commands
+6) Console commands
 -- copy one folder to another folder
 cp -r source_folder destination_folder
 

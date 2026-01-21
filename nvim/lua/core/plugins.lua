@@ -26,9 +26,18 @@ require("lazy").setup({
 	  "s1n7ax/nvim-window-picker",
     }
 	},
-{
-  'nvim-treesitter/nvim-treesitter',
-  version = "v0.9.2",
-  build = ':TSUpdate',
-}
+	{
+	  'nvim-treesitter/nvim-treesitter',
+	  version = "v0.9.2",
+	  build = ':TSUpdate',
+	},
+	{ 
+		'neovim/nvim-lspconfig',
+		version = "v2.5.0",
+	},
+	{
+		"mason-org/mason.nvim",
+		"williamboman/mason-lspconfig.nvim",
+		version = "1.*",
+	}
 })

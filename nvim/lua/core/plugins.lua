@@ -44,5 +44,9 @@ require("lazy").setup({
   		"mfussenegger/nvim-jdtls",
   		ft = { "java" },
 	},
-	{ 'joshdick/onedark.vim' }
+	{ 'joshdick/onedark.vim' },
+    'hrsh7th/cmp-buffer',
+    'hrsh7th/cmp-path',
+    'hrsh7th/cmp-cmdline',
+    'hrsh7th/nvim-cmp'
 })

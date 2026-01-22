@@ -15,3 +15,4 @@ vim.api.nvim_create_autocmd("FileType", {
     require("plugins.java")
   end,
 })
+require('plugins.cmp')

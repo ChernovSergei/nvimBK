@@ -39,5 +39,9 @@ require("lazy").setup({
 		"mason-org/mason.nvim",
 		"williamboman/mason-lspconfig.nvim",
 		version = "1.*",
+	},
+	{
+  		"mfussenegger/nvim-jdtls",
+  		ft = { "java" },
 	}
 })

@@ -16,3 +16,4 @@ vim.api.nvim_create_autocmd("FileType", {
   end,
 })
 require('plugins.cmp')
+require('plugins.telescope')

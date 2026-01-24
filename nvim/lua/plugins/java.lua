@@ -1,9 +1,9 @@
---local capabilities = require("cmp_nvim_lsp").default_capabilities()
+local capabilities = require("cmp_nvim_lsp").default_capabilities()
 local jdtls = require("jdtls")
 local jdtls_path = vim.fn.stdpath("data") .. "/mason/packages/jdtls"
 
 local launcher = vim.fn.glob(jdtls_path .. "/plugins/org.eclipse.equinox.launcher_*.jar")
-local config = jdtls_path .. "/config_linux_arm"
+local config = jdtls_path .. "/config_linux"
 
 local project_name = vim.fn.fnamemodify(vim.fn.getcwd(), ":p:h:t")
 local workspace_dir = vim.fn.stdpath("data") .. "/jdtls-workspace/" .. project_name
@@ -36,7 +36,7 @@ local cmd = {
 jdtls.start_or_attach({
   cmd = cmd,
   root_dir = root_dir,
-  --capabilities = capabilities,
+  capabilities = capabilities,
   settings = {
     java = {
       signatureHelp = { enabled = true },

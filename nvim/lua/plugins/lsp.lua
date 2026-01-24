@@ -1,8 +1,8 @@
 local lspconfig = require("lspconfig")
 
 -- общие capabilities (cmp, если добавишь позже)
-local capabilities = vim.lsp.protocol.make_client_capabilities()
---local capabilities = require("cmp_nvim_lsp").default_capabilities()
+--local capabilities = vim.lsp.protocol.make_client_capabilities()
+local capabilities = require("cmp_nvim_lsp").default_capabilities()
 
 -- общий on_attach
 local on_attach = function(client, bufnr)

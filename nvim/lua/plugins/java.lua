@@ -4,6 +4,9 @@ local jdtls_path = vim.fn.stdpath("data") .. "/mason/packages/jdtls"
 
 local launcher = vim.fn.glob(jdtls_path .. "/plugins/org.eclipse.equinox.launcher_*.jar")
 local config = jdtls_path .. "/config_linux"
+if vim.fn.isdirectory(config) == 0 then
+    config = jdtls_path .. "/config_linux_arm"
+end
 
 local project_name = vim.fn.fnamemodify(vim.fn.getcwd(), ":p:h:t")
 local workspace_dir = vim.fn.stdpath("data") .. "/jdtls-workspace/" .. project_name
@@ -15,6 +18,10 @@ local root_dir = require("jdtls.setup").find_root({
   "pom.xml",
   "build.gradle",
 })
+
+if root_dir == nil then
+    return
+end
 
 local cmd = {
   "java",

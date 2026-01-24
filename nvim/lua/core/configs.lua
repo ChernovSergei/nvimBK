@@ -4,7 +4,7 @@ vim.o.cursorline = true
 vim.o.wrap = false
 vim.o.incsearch = true
 
-vim.g.did_load_filetypes = 1
+--vim.g.did_load_filetypes = 1
 vim.g.formatoptions = "qrn1"
 vim.opt.showmode = false
 vim.opt.updatetime = 100

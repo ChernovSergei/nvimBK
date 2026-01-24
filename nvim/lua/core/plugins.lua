@@ -37,18 +37,25 @@ require("lazy").setup({
 	},
 	{
 		"mason-org/mason.nvim",
+		version = "1.*",
+	},
+	{
 		"williamboman/mason-lspconfig.nvim",
 		version = "1.*",
 	},
+
 	{
   		"mfussenegger/nvim-jdtls",
   		ft = { "java" },
 	},
 	{ 'joshdick/onedark.vim' },
+    'hrsh7th/nvim-cmp',
+    'hrsh7th/cmp-nvim-lsp',
     'hrsh7th/cmp-buffer',
     'hrsh7th/cmp-path',
     'hrsh7th/cmp-cmdline',
-    'hrsh7th/nvim-cmp',
+    'hrsh7th/vim-vsnip',
+    'hrsh7th/cmp-vsnip',
 {
   "nvim-telescope/telescope.nvim",
   branch = "master",

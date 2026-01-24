@@ -1,3 +1,4 @@
+--local capabilities = require("cmp_nvim_lsp").default_capabilities()
 local jdtls = require("jdtls")
 local jdtls_path = vim.fn.stdpath("data") .. "/mason/packages/jdtls"
 
@@ -35,6 +36,7 @@ local cmd = {
 jdtls.start_or_attach({
   cmd = cmd,
   root_dir = root_dir,
+  --capabilities = capabilities,
   settings = {
     java = {
       signatureHelp = { enabled = true },

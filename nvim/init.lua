@@ -12,7 +12,7 @@ require('plugins.mason')
 vim.api.nvim_create_autocmd("FileType", {
   pattern = "java",
   callback = function()
-    require("plugins.java")
+    pcall(require, "plugins.java")
   end,
 })
 require('plugins.cmp')

@@ -56,12 +56,16 @@ require("lazy").setup({
     'hrsh7th/cmp-cmdline',
     'hrsh7th/vim-vsnip',
     'hrsh7th/cmp-vsnip',
-{
-  "nvim-telescope/telescope.nvim",
-  branch = "master",
-  dependencies = { "nvim-lua/plenary.nvim" },
-  config = function()
-    require("telescope").setup({})
-  end,
-}
+    {
+      "nvim-telescope/telescope.nvim",
+      branch = "master",
+      dependencies = { "nvim-lua/plenary.nvim" },
+      config = function()
+        require("telescope").setup({})
+      end,
+    },
+    {
+        "jose-elias-alvarez/null-ls.nvim",
+        --dependencies = { "nvim-lua/plenary.nvim "},
+    }
 })

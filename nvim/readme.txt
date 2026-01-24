@@ -3,6 +3,7 @@
 3) Java installation
 4) Neovim
 5) Treesitter in lazy
+6) null-ls
 
 1) Install ubuntu terminal using proot-distro using termux 
 proot-distro install -y ubuntu
@@ -105,3 +106,9 @@ rmdir folder_name
 
 -- remove folder with content
 rm -r folder_name
+
+6) null-ls
+-- for null-ls formater is required to be installed on linux
+apt install google-java-format
+
+

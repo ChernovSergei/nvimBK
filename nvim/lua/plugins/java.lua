@@ -40,6 +40,24 @@ local cmd = {
   "-data", workspace_dir,
 }
 
+local bundles = {
+    vim.fn.glob(
+        vim.fn.stdpath("data")
+        .. "/mason/packages/java-debug-adapter/extension/server/com.microsoft.java.debug.plugin-*.jar"
+        ),
+}
+
+vim.list_extend(
+    bundles,
+    vim.split(
+        vim.fn.glob(
+            vim.fn.stdpath("data")
+            .."/mason/packages/java-test/extension/server/*.jar"
+        ),
+        "\n"
+    )
+    )
+
 jdtls.start_or_attach({
   cmd = cmd,
   root_dir = root_dir,
@@ -50,4 +68,21 @@ jdtls.start_or_attach({
       contentProvider = { preferred = "fernflower" },
     },
   },
+  init_options = {
+      bundles = bundles,
+  }
 })
+
+local opts = { noremap = true, silent = true, buffer = true }
+
+--Organize imports
+vim.keymap.set("n", "<leader>oi", jdtls.organize_imports, opts)
+
+--Extract
+vim.keymap.set("n", "<leader>em", jdtls.extract_method, opts)
+vim.keymap.set("n", "<leader>ev", jdtls.extract_variable, opts)
+vim.keymap.set("n", "<leader>ec", jdtls.extract_constant, opts)
+
+--Test
+vim.keymap.set("n", "<leader>tt", jdtls.test_class, opts)
+vim.keymap.set("n", "<leader>tn", jdtls.test_nearest_method, opts)

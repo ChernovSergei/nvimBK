@@ -21,4 +21,11 @@ vim.keymap.set("n", "<leader>o", ":Neotree float git_status<CR>")
 --vim.keymap.set({"n", "v"}, "<leader>y", "\"+y")
 --vim.keymap.set({"n", "v"}, "<leader>p", "\"+p")
 
+--Java Debugger
+local dap = require("dap")
+vim.keymap.set("n", "<leader>5", dap.continue)
+vim.keymap.set("n", "<leader>7", dap.step_over)
+vim.keymap.set("n", "<leader>8", dap.step_into)
+vim.keymap.set("n", "<leader>9", dap.step_out)
+vim.keymap.set("n", "<leader>b", dap.toggle_breakpoint)
 

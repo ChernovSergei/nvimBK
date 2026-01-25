@@ -1,7 +1,7 @@
-local capabilities = require("cmp_nvim_lsp").default_capabilities()
 local jdtls = require("jdtls")
-local jdtls_path = vim.fn.stdpath("data") .. "/mason/packages/jdtls"
+local capabilities = require("cmp_nvim_lsp").default_capabilities()
 
+local jdtls_path = vim.fn.stdpath("data") .. "/mason/packages/jdtls"
 local launcher = vim.fn.glob(jdtls_path .. "/plugins/org.eclipse.equinox.launcher_*.jar")
 local config = jdtls_path .. "/config_linux"
 if vim.fn.isdirectory(config) == 0 then
@@ -66,6 +66,7 @@ jdtls.start_or_attach({
     java = {
       signatureHelp = { enabled = true },
       contentProvider = { preferred = "fernflower" },
+      format = { enabled = true },
     },
   },
   init_options = {

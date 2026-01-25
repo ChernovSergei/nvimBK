@@ -9,12 +9,12 @@ require('plugins.neotree')
 require('plugins.treesitter')
 require('plugins.lsp')
 require('plugins.mason')
-vim.api.nvim_create_autocmd("FileType", {
-  pattern = "java",
-  callback = function()
-    pcall(require, "plugins.java")
-  end,
-})
+--vim.api.nvim_create_autocmd("FileType", {
+--  pattern = "java",
+--  callback = function()
+--    pcall(require, "plugins.java")
+--  end,
+--})
 require('plugins.null-ls')
 require('plugins.cmp')
 require('plugins.telescope')

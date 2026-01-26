@@ -5,7 +5,7 @@ vim.o.wrap = false
 vim.o.incsearch = true
 
 --vim.g.did_load_filetypes = 1
-vim.g.formatoptions = "qrn1"
+vim.opt.formatoptions = "qrn1"
 vim.opt.showmode = false
 vim.opt.updatetime = 100
 vim.wo.signcolumn = "yes"
@@ -13,7 +13,7 @@ vim.opt.scrolloff = 8
 vim.wo.linebreak = true
 vim.opt.virtualedit = "block"
 vim.opt.undofile = true
-vim.opt.shell = "/bin/zsh"
+vim.opt.shell = vim.fn.executable("zsh") == 1 and "/bin/zsh" or "/bin/bash"
 
 --Mouse
 vim.opt.mouse = "a"

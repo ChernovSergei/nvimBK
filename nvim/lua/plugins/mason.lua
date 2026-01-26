@@ -4,5 +4,6 @@ require("mason-lspconfig").setup({
     "lua_ls",
     "pyright",
     "ts_ls",
+    "jdtls",
   }
 })

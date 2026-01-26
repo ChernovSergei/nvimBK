@@ -7,14 +7,14 @@ require('core.configs')
 --Pluggins
 require('plugins.neotree')
 require('plugins.treesitter')
-require('plugins.lsp')
 require('plugins.mason')
+require('plugins.cmp')
+require('plugins.lsp')
+require('plugins.null-ls')
+require('plugins.telescope')
 --vim.api.nvim_create_autocmd("FileType", {
 --  pattern = "java",
 --  callback = function()
 --    pcall(require, "plugins.java")
 --  end,
 --})
-require('plugins.null-ls')
-require('plugins.cmp')
-require('plugins.telescope')

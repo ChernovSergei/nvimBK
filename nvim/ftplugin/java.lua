@@ -32,7 +32,7 @@ local cmd = {
   "-Dlog.level=ALL",
 --  "Xms512m",
 --  "Xmx1g",
-  "-javaagent:" .. jdtls_path .. "/lombok.jar",
+--  "-javaagent:" .. jdtls_path .. "/lombok.jar",
   "-Xms1g",
   "--add-modules=ALL-SYSTEM",
   "--add-opens", "java.base/java.util=ALL-UNNAMED",
@@ -90,3 +90,34 @@ vim.keymap.set("n", "<leader>ec", jdtls.extract_constant, opts)
 --Test
 vim.keymap.set("n", "<leader>tt", jdtls.test_class, opts)
 vim.keymap.set("n", "<leader>tn", jdtls.test_nearest_method, opts)
+
+--Code generation
+local bufnr = vim.api.nvim_get_current_buf()
+
+local function java_action(kind)
+    vim.lsp.buf.code_action({
+        context = { only = { kind } },
+        apply = true,
+    })
+end
+
+vim.keymap.set("n", "<leader>j", function()
+    vim.lsp.buf.code_action()
+    end, { buffer = bufnr, desc = "Java code actions" }
+)
+
+
+vim.keymap.set("n", "<leader>jc", function()
+    java_action("source.generate.constructor")
+    end, { buffer = bufnr, desc = "Java constructor" }
+)
+
+vim.keymap.set("n", "<leader>ja", function()
+    java_action("source.generate.accessors")
+    end, { buffer = bufnr, desc = "Java accessors" }
+)
+
+vim.keymap.set("n", "<leader>je", function()
+    java_action("source.generate.equalsHashCode")
+    end, { buffer = bufnr, desc = "Java equals/hashCode" }
+)

@@ -63,6 +63,11 @@ export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-arm64
 export PATH=$JAVA_HOME/bin:$PATH
 source ~/.bashrc
 
+--Maven installation
+apt update
+apt install maven -y
+mvn -version
+
 6) Git installation
 apt update
 apt install -y git

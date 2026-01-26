@@ -12,9 +12,3 @@ require('plugins.cmp')
 require('plugins.lsp')
 require('plugins.null-ls')
 require('plugins.telescope')
---vim.api.nvim_create_autocmd("FileType", {
---  pattern = "java",
---  callback = function()
---    pcall(require, "plugins.java")
---  end,
---})

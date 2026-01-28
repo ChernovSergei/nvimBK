@@ -7,6 +7,8 @@ require('core.configs')
 --Pluggins
 require('plugins.neotree')
 require('plugins.treesitter')
+require('plugins.javaMap')
+require('plugins.mason')
 require('plugins.mason')
 require('plugins.cmp')
 require('plugins.lsp')

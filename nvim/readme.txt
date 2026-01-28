@@ -112,6 +112,9 @@ git push -u origin main
 -- clone existing repository
 git clone git@github.com:username/repo-name.git
 
+-- rollback uncommited changes to the last commit
+git restore .
+git checkout -- .
 
 7) Neovim v.0.10.0
 -- Removal

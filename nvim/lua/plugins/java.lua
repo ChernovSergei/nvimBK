@@ -39,9 +39,9 @@ function M.on_attach(_, bufnr)
   end, opts)
 
   -- Extract refactorings
-  vim.keymap.set("n", "<leader>em", vim.lsp.buf.extract_method, opts)
-  vim.keymap.set("n", "<leader>ev", vim.lsp.buf.extract_variable, opts)
-  vim.keymap.set("n", "<leader>ec", vim.lsp.buf.extract_constant, opts)
+--  vim.keymap.set("n", "<leader>em", vim.lsp.buf.extract_method, opts)
+--  vim.keymap.set("n", "<leader>ev", vim.lsp.buf.extract_variable, opts)
+--  vim.keymap.set("n", "<leader>ec", vim.lsp.buf.extract_constant, opts)
 
   -- Tests (jdtls helpers are stable here)
   local jdtls = require("jdtls")

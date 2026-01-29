@@ -8,6 +8,7 @@
 8) Treesitter in lazy
 9) Mason
 10) Console commands
+11) Copy and paste from/to clipboard
 
 2) Packages installation in termux
 pkg update && pk upgrade -y
@@ -170,4 +171,15 @@ rm -r folder_name
 -- for null-ls formater is required to be installed on linux
 apt install google-java-format
 
+11) Copy and paste from/to clipboard
+--Install clipboard inside termux
+pkg install termux-api
 
+--Check:
+termux-clipboard-get
+termux-clipboard-set (Ctrl + D is exit)
+
+--Go to ubuntu and Check
+which termux-clipboard-get
+
+--you should get copied text from termux

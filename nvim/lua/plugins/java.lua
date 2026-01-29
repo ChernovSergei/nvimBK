@@ -14,11 +14,18 @@ function M.on_attach(_, bufnr)
   local opts = { buffer = bufnr, silent = true, noremap = true }
 
   -- General
-  vim.keymap.set("n", "<leader>j", vim.lsp.buf.code_action, opts)
+  vim.keymap.set({ "n", "v" }, "<leader>ja", function()
+  if vim.fn.mode() == "v" or vim.fn.mode() == "V" then
+    vim.lsp.buf.code_action()
+  else
+    vim.lsp.buf.code_action()
+  end
+  end, opts)
+  vim.keymap.set("n", "<leader>jr", vim.lsp.buf.rename, opts)
 
   -- Code generation
   vim.keymap.set("n", "<leader>jc", function()
-    java_action_by_title("Constructor")
+    java_action_by_title("^Generate Constructors")
   end, opts)
 
   vim.keymap.set("n", "<leader>je", function()
@@ -34,14 +41,26 @@ function M.on_attach(_, bufnr)
   end, opts)
 
   -- Imports
-  vim.keymap.set("n", "<leader>oi", function()
+  vim.keymap.set("n", "<leader>ji", function()
     java_action_by_title("Organize imports")
+  end, opts)
+
+  vim.keymap.set("n", "<leader>jg", function()
+    java_action_by_title("getter")
   end, opts)
 
   -- Extract refactorings
 --  vim.keymap.set("n", "<leader>em", vim.lsp.buf.extract_method, opts)
 --  vim.keymap.set("n", "<leader>ev", vim.lsp.buf.extract_variable, opts)
 --  vim.keymap.set("n", "<leader>ec", vim.lsp.buf.extract_constant, opts)
+
+  --Navigation
+  vim.keymap.set("n", "gi", vim.lsp.buf.implementation, opts)
+  vim.keymap.set("n", "gt", vim.lsp.buf.type_definition, opts)
+
+  --Usage
+  vim.keymap.set("n", "<leader>ju",
+    require("telescope.builtin").lsp_references, opts)
 
   -- Tests (jdtls helpers are stable here)
   local jdtls = require("jdtls")

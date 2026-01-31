@@ -1,13 +1,15 @@
---Basics
+--Plugins bootstrap FIRST
 require('core.plugins')
-require('core.mappings')
-require('core.colors')
+
+--Basics
 require('core.configs')
+require('core.colors')
+require('core.mappings')
 
 --Pluggins
 require('plugins.neotree')
 require('plugins.treesitter')
-require('plugins.java')
+--require('plugins.java')
 require('plugins.mason')
 require('plugins.cmp')
 require('plugins.lsp')

@@ -72,5 +72,15 @@ require("lazy").setup({
     {
         "rcarriga/nvim-dap-ui",
         dependencies = { "mfussenegger/nvim-dap" },
+    },
+    {
+        "windwp/nvim-autopairs",
+        event = "InsertEnter",
+        config = function()
+            require("nvim-autopairs").setup({
+                check_ts = true, --treesitter-aware(important for java)
+                disable_filetype = {"TelescopePrompt", "vim"},
+            })
+        end,
     }
 })

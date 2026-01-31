@@ -22,12 +22,12 @@ vim.keymap.set("n", "<leader>o", ":Neotree float git_status<CR>")
 --vim.keymap.set({"n", "v"}, "<leader>p", "\"+p")
 
 --Java Debugger
-local dap = require("dap")
-vim.keymap.set("n", "<leader>5", dap.continue)
-vim.keymap.set("n", "<leader>7", dap.step_over)
-vim.keymap.set("n", "<leader>8", dap.step_into)
-vim.keymap.set("n", "<leader>9", dap.step_out)
-vim.keymap.set("n", "<leader>b", dap.toggle_breakpoint)
+--local dap = require("dap")
+vim.keymap.set("n", "<leader>5", function()require("dap").continue() end)
+vim.keymap.set("n", "<leader>7", function()require("dap").step_over() end)
+vim.keymap.set("n", "<leader>8", function()require("dap").step_into() end)
+vim.keymap.set("n", "<leader>9", function()require("dap").step_out() end)
+vim.keymap.set("n", "<leader>b", function()require("dap").toggle_breakpoint() end)
 
 --Copy and paste from buffer or clipboard
 local opts = { noremap = true, silent = true }

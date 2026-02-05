@@ -39,6 +39,21 @@ lspconfig.ts_ls.setup({
   on_attach = on_attach,
 })
 
+lspconfig.html.setup({
+  capabilities = capabilities,
+  on_attach = on_attach,
+})
+
+lspconfig.cssls.setup({
+  capabilities = capabilities,
+  on_attach = on_attach,
+})
+
+lspconfig.eslint.setup({
+  capabilities = capabilities,
+  on_attach = on_attach,
+})
+
 vim.diagnostic.config({
     virtual_text = false,
     signs = true,

@@ -44,6 +44,11 @@ apt install -y nodejs
 --Python
 apt install -y python3 python3-pip
 
+--Packages installation for html, js, css, react
+npm install -g vscode-langservers-extracted --force
+npm install -g stylelint --force
+npm install -g stylelint --force
+
 5) Java deletion/installation
 --Deletion
 apt remove openjdk-17-jdk openjdk-17-jre

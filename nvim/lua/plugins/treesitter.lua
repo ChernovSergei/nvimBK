@@ -17,6 +17,7 @@ require('nvim-treesitter.configs').setup {
   auto_install = true,
   highlight = {
     enable = true,
+    disable = {"html", "css", "javascript", "tsx"}
   },
 }
 --require'nvim-treesitter'.setup {

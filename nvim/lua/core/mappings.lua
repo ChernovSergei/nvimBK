@@ -1,9 +1,10 @@
 vim.g.mapleader = " "
 
 --Portable keyboard shortcuts
-vim.keymap.set({"i", "v"}, "jj", "<ESC>")
---vim.keymap.set({"i", "v"}, "<C-a>", "<ESC>")
---vim.keymap.set("i", "<C-s>", "<ESC> :w!<CR>")
+--vim.keymap.set( "i", "jk", "<ESC>")
+--vim.keymap.set( "v", "jk", "<ESC>")
+vim.keymap.set({"i", "v"}, "<C-a>", "<ESC>")
+vim.keymap.set("i", "<C-s>", "<ESC> :w!<CR>")
 vim.keymap.set({"i"}, "<A-p>", "+")
 vim.keymap.set({"i"}, "<A-CR>", "=")
 vim.keymap.set({"i"}, "<A-;>", "\"")

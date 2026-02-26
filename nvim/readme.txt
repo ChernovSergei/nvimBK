@@ -88,7 +88,7 @@ git config --global --list
 ssh-keygen -t ed25519 -C "your_email@example.com"
 
 -- start SSH
-eval "$(ssh-agent -a)"
+eval "$(ssh-agent -s)"
 ssh-add ~/.ssh/id_ed25519
 
 -- copy SSH key

@@ -2,6 +2,10 @@ local lspconfig = require("lspconfig")
 
 -- общие capabilities (cmp, если добавишь позже)
 --local capabilities = vim.lsp.protocol.make_client_capabilities()
+if vim.fn.has("android") == 1 then
+    return
+end
+
 local capabilities = require("cmp_nvim_lsp").default_capabilities()
 
 -- общий on_attach
@@ -48,7 +52,6 @@ lspconfig.cssls.setup({
   capabilities = capabilities,
   on_attach = on_attach,
 })
-
 lspconfig.eslint.setup({
   capabilities = capabilities,
   on_attach = on_attach,

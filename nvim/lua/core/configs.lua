@@ -41,6 +41,7 @@ vim.opt.tabstop = 4
 vim.opt.softtabstop = 4
 vim.opt.smartindent = true
 
+vim.opt.showtabline = 2
 --Fillchars
 --vim.opt.fillchars = {
 --	vert = "|",

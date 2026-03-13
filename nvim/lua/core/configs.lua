@@ -52,3 +52,5 @@ vim.opt.showtabline = 2
 --	foldsep = "|",
 --	foldclose = ">"
 --}
+--For PC
+--vim.api.nvim_create_user_command('Copy', "w !xclip -selection clipboard", {})

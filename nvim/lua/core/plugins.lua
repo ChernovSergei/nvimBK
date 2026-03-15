@@ -15,6 +15,11 @@ end
 vim.opt.rtp:prepend(lazypath)
 
 require("lazy").setup({
+    --{ 'joshdick/onedark.vim' },
+    {
+        "folke/tokyonight.nvim",
+        priority = 1000,
+    },
 	{ 'phaazon/hop.nvim' },
   	{
     "nvim-neo-tree/neo-tree.nvim",
@@ -48,8 +53,7 @@ require("lazy").setup({
   		"mfussenegger/nvim-jdtls",
   		ft = { "java" },
 	},
-	{ 'joshdick/onedark.vim' },
-    'hrsh7th/nvim-cmp',
+	    'hrsh7th/nvim-cmp',
     'hrsh7th/cmp-nvim-lsp',
     'hrsh7th/cmp-buffer',
     'hrsh7th/cmp-path',

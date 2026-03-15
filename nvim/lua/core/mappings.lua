@@ -15,6 +15,8 @@ vim.keymap.set({"i"}, "<A-[>", "\\")
 vim.keymap.set( "n", "<C-n>", ":botright vnew<CR>")
 vim.keymap.set( "n", "<Tab>", ":wincmd w<CR>")
 vim.keymap.set( "n", "<S-Tab>", ":wincmd w<CR>")
+vim.keymap.set( "n", "<A-Left>", "gT")
+vim.keymap.set( "n", "<A-Right>", "gt")
 
 --Neotree open main and git view
 vim.keymap.set("n", "<leader>e", ":Neotree float focus<CR>")

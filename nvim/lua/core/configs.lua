@@ -42,6 +42,7 @@ vim.opt.softtabstop = 4
 vim.opt.smartindent = true
 
 vim.opt.showtabline = 2
+vim.api.nvim_create_user_command('Copy', "w !xclip -selection clipboard", {})
 --Fillchars
 --vim.opt.fillchars = {
 --	vert = "|",
@@ -52,5 +53,3 @@ vim.opt.showtabline = 2
 --	foldsep = "|",
 --	foldclose = ">"
 --}
---For PC
---vim.api.nvim_create_user_command('Copy', "w !xclip -selection clipboard", {})

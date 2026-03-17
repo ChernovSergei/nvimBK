@@ -10,6 +10,7 @@
 10) Console commands
 11) Copy and paste from/to clipboard
 12) Postgresql
+13) Maven
 
 2) Packages installation in termux
 pkg update && pk upgrade -y
@@ -164,6 +165,10 @@ add next folders and file
 --core
 --plugins
 
+--NVim shortcuts & commands
+:noh - deselect all search results
+:nohlsearch - deselect all search results
+
 8) Treesitter in lazy compatible with NVim 0.10.0
 use {
 	"nvim-treesitter/nvim-treesitter",
@@ -224,6 +229,7 @@ a) Обновляем Termux и устанавливаем PostgreSQL
 pkg update && pkg upgrade
 pkg install Postgresql
 
+TERMUX
 b) Инициализация кластера (каталога данных)
 initdb $PREFIX/var/lib/postgresql
 
@@ -245,6 +251,20 @@ d) Опционально: добавляем alias для удобства
 echo "alias pgstart='pg_ctl -D $PREFIX/var/lib/postgresql start'" >> ~/.bashrc
 echo "alias pgstop='pg_ctl -D $PREFIX/var/lib/postgresql stop'" >> ~/.bashrc
 
+UBUNTU
+b) start stop restart
+sudo systemctl start postgresql
+sudo systemctl restart postgresql
+sudo systemctl stop postgresql
+sudo systemctl status postgresql
+
+c) connect to a server
+sudo -u postgresql psql #enter to a server under postgres user
+psql -U postgres -d postgres # connect to a base postgres
+
+d) default port
+ss -ltnp | grep postgres	# 5432 by default 
+
 e) Подключение к серверу
 
 # Подключение к базе по имени
@@ -253,8 +273,21 @@ psql -U postgres -d postgres
 # Подключение к другой базе
 psql -U myuser -d springboot
 
--- выйти из psql
-\q
+COMMANDS
+\q - exit
+
+\dt - show tables for current schema (public by default)
+\dt *.* - show tables for all schemas
+\dt public.* - show tables for public schema
+
+\l - show list of databases
+
+\d users - show 'users' table structure
+\d+ users - show 'users' table structure with additional information
+
+STATUSES
+postgres=# - common mode (ready to implement a new commands)
+postgres-# - command wasn't completed. Press Ctrl+C to interrupt
 
 f) Стандартные базы данных Postgresql
 
@@ -355,3 +388,10 @@ spring.datasource.username=myuser
 spring.datasource.password=mypassword
 spring.jpa.hibernate.ddl-auto=update
 
+13) Maven
+mvn spring-boot:run
+
+there is no complete mvn debug function ready from the box.
+it would be alias a function inside ~/.bashrc
+
+alias mvn-debug-ns='mvn spring-boot:run -Dspring-boot.run.jvmArugments="-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005"'

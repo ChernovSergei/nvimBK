@@ -74,3 +74,15 @@ vim.api.nvim_create_autocmd("CursorHold" , {
         })
     end,
 })
+
+lspconfig.emmet_language_server.setup({
+    capabilities = capabilities,
+    on_attach = on_attach,
+    filetypes = {
+        "html",
+        "css",
+        "javascriptreact",
+        "typescriptreact",
+        "tsx",
+    },
+})

@@ -7,5 +7,6 @@ require("mason-lspconfig").setup({
     "html",
     "cssls",
     "eslint",
+    "emmet_language_server",
   }
 })

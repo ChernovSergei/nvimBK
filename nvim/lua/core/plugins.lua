@@ -20,7 +20,7 @@ require("lazy").setup({
         "folke/tokyonight.nvim",
         priority = 1000,
     },
-	{ 'phaazon/hop.nvim' },
+	--{ 'phaazon/hop.nvim' },
   	{
     "nvim-neo-tree/neo-tree.nvim",
     branch = "v3.x",
@@ -33,7 +33,7 @@ require("lazy").setup({
 	},
 	{
 	  'nvim-treesitter/nvim-treesitter',
-	  version = "v0.9.2",
+	  --version = "v0.9.2",
 	  build = ':TSUpdate',
 	},
 	{ 
@@ -42,24 +42,24 @@ require("lazy").setup({
 	},
 	{
 		"mason-org/mason.nvim",
-		version = "1.*",
+		--version = "1.*",
 	},
 	{
 		"williamboman/mason-lspconfig.nvim",
-		version = "1.*",
+		--version = "2.*",
 	},
 
 	{
   		"mfussenegger/nvim-jdtls",
   		ft = { "java" },
 	},
-	    'hrsh7th/nvim-cmp',
+    'hrsh7th/nvim-cmp',
     'hrsh7th/cmp-nvim-lsp',
     'hrsh7th/cmp-buffer',
     'hrsh7th/cmp-path',
     'hrsh7th/cmp-cmdline',
-    'hrsh7th/vim-vsnip',
-    'hrsh7th/cmp-vsnip',
+    --'hrsh7th/vim-vsnip',
+    --'hrsh7th/cmp-vsnip',
     {
       "nvim-telescope/telescope.nvim",
       branch = "master",
@@ -68,10 +68,9 @@ require("lazy").setup({
         require("telescope").setup({})
       end,
     },
-    {
-        "jose-elias-alvarez/null-ls.nvim",
+    --{
         --dependencies = { "nvim-lua/plenary.nvim "},
-    },
+    --},
     { "mfussenegger/nvim-dap" },
     {
         "rcarriga/nvim-dap-ui",
@@ -86,5 +85,31 @@ require("lazy").setup({
                 disable_filetype = {"TelescopePrompt", "vim"},
             })
         end,
+    },
+    {
+        "L3MON4D3/LuaSnip",
+        dependencies = {
+            "rafamadriz/friendly-snippets",
+        },
+    },
+    {
+        "saadparwaiz1/cmp_luasnip",
+    },
+    {
+        "windwp/nvim-ts-autotag",
+        dependencies = {
+            "nvim-treesitter/nvim-treesitter",
+        },
+        config = function () require("nvim-ts-autotag").setup({
+            opts = {
+                enable_close = true,
+                enable_rename = true,
+                enable_close_on_slash = false,
+            },
+        })
+        end,
+    },
+    {
+        "stevearc/conform.nvim",
     }
 })

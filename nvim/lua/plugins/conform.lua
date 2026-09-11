@@ -11,13 +11,22 @@ conform.setup({
         lua = {"stylua"},
         python = {"black"},
     },
-    format_on_save = {
-        timeout_ms = 500,
-        lsp_fallback = true,
-    }
+    format_on_save = function(bufnr)
+        if vim.b[bufnr].wordvim_docx then
+            return nil
+        end
+        return {
+            timeout_ms = 500,
+            lsp_fallback = true,
+        }
+    end
 })
 vim.keymap.set("n","<leader>f",
     function()
+        if vim.b.wordvim_docx then
+            vim.notify("Word Vim: Conform is disabled for DOCX buffers", vim.log.levels.INFO)
+            return
+        end
         conform.format({
             async = true,
             lsp_fallback=true,

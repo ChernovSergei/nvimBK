@@ -13,8 +13,6 @@ vim.keymap.set({"i"}, "<A-[>", "\\")
 
 --New window ans switching between the windows
 vim.keymap.set( "n", "<C-n>", ":botright vnew<CR>")
-vim.keymap.set( "n", "<Tab>", ":wincmd w<CR>")
-vim.keymap.set( "n", "<S-Tab>", ":wincmd w<CR>")
 vim.keymap.set( "n", "<A-Left>", "gT")
 vim.keymap.set( "n", "<A-Right>", "gt")
 
@@ -27,10 +25,10 @@ vim.keymap.set("n", "<leader>o", ":Neotree float git_status<CR>")
 
 --Java Debugger
 --local dap = require("dap")
-vim.keymap.set("n", "<leader>5", function()require("dap").continue() end)
-vim.keymap.set("n", "<leader>7", function()require("dap").step_over() end)
-vim.keymap.set("n", "<leader>8", function()require("dap").step_into() end)
-vim.keymap.set("n", "<leader>9", function()require("dap").step_out() end)
+vim.keymap.set("n", "<F7>", function() require("dap").step_into() end, { desc = "DAP: Step Into" })
+vim.keymap.set("n", "<F8>", function() require("dap").step_over() end, { desc = "DAP: Step Over" })
+vim.keymap.set("n", "<S-F8>", function() require("dap").step_out() end, { desc = "DAP: Step Out" })
+vim.keymap.set("n", "<F9>", function() require("dap").continue() end, { desc = "DAP: Continue" })
 vim.keymap.set("n", "<leader>b", function()require("dap").toggle_breakpoint() end)
 
 --Copy and paste from buffer or clipboard

@@ -83,6 +83,9 @@ require("lazy").setup({
             require("nvim-autopairs").setup({
                 check_ts = true, --treesitter-aware(important for java)
                 disable_filetype = {"TelescopePrompt", "vim"},
+                enabled = function(bufnr)
+                    return not vim.b[bufnr].wordvim_docx
+                end,
             })
         end,
     },

@@ -1,0 +1,123 @@
+Word Vim + main Neovim config — integrated v5.3
+================================================
+
+Что изменено
+------------
+1. Word Vim встроен в основную конфигурацию Neovim как lua/wordvim/.
+2. В init.lua добавлен require("wordvim").setup().
+3. Глобальное отключение ZIP-плагина НЕ используется.
+   .docx обрабатывает Word Vim; .zip/.jar/.war остаются обычными архивами.
+4. DOCX помечается vim.b.wordvim_docx = true, но filetype остаётся markdown.
+   Tree-sitter Markdown работает, а опасные редакторские плагины можно отличить от обычного .md.
+5. DOCX-профиль:
+   wrap=true
+   linebreak=true
+   number=true
+   relativenumber=true
+   smartindent=false
+   undofile=false
+   formatoptions=""
+   signcolumn=no
+   Word Vim statusline только в окне DOCX.
+6. При уходе из DOCX оконные настройки восстанавливаются, поэтому Word UI не протекает в код.
+7. cmp отключён только для Word Vim DOCX.
+8. nvim-autopairs отключён только для Word Vim DOCX.
+9. Conform format-on-save и ручной <leader>f отключены только для Word Vim DOCX.
+10. Word Vim mappings форматирования/Heading/Lists/Style UI теперь buffer-local.
+11. Глобальные Normal Tab/Shift+Tab для переключения окон удалены.
+    Используй стандартные Ctrl-W h/j/k/l.
+12. DAP:
+    F7       Step Into
+    F8       Step Over
+    Shift-F8 Step Out
+    F9       Continue
+    Space+b  Toggle breakpoint остаётся.
+13. Telescope-выбор изображения:
+    Space i i      открыть выбор файла
+    :WordImagePicker
+    После выбора Word Vim проверяет расширение и спрашивает alt/caption и width.
+
+Установка
+---------
+1. Закрой Neovim.
+2. Сделай резервную копию:
+   C:\Users\Leo\AppData\Local\nvim
+3. Замени содержимое этой папки содержимым данного архива.
+4. Запусти Neovim.
+5. Открой .docx.
+6. Выполни :WordHelp для списка Word Vim команд.
+
+Первичная проверка
+------------------
+- Открой Java-файл: cmp/autopairs/Conform должны работать как раньше.
+- F7/F8/Shift-F8/F9 должны быть DAP-клавишами.
+- Tab больше не переключает окна в Normal mode.
+- Открой DOCX:
+  * relative numbers остаются включены;
+  * длинный текст переносится по окну;
+  * signcolumn отсутствует;
+  * Enter = Word paragraph;
+  * Shift+Enter = line break;
+  * Tab/Shift+Tab = Word Vim логика;
+  * cmp/autopairs не вмешиваются;
+  * Space 1..6 = Heading 1..6;
+  * Space i i = Telescope image picker.
+- Переключись обратно в Java: wrap/signcolumn/statusline должны вернуться к обычному виду.
+
+Важно
+-----
+Это первая интегрированная сборка после standalone Word Vim v5.2.
+Функции DOCX v5.2 (safe save, styles, tabs, indents, lists, pages, TOC,
+captions, REF/PAGEREF, image resize/rotate) сохранены.
+
+Следующий этап после проверки этой сборки:
+- EN/RU/RO переключение языка;
+- полный ручной сценарий тестирования Word Vim.
+
+============================================================
+Word Vim integrated v5.4 — fixes after Windows test
+============================================================
+
+1. Fixed conflict with Neovim built-in zipPlugin.
+   - *.docx is removed from g:zipPlugin_ext before runtime plugins load.
+   - *.zip / *.jar / *.war and other archive formats remain supported.
+   - Word Vim now owns *.docx without zip#Browse trying to open it.
+   - unzip is NOT required for Word Vim DOCX editing.
+
+2. Fixed TOC duplication on save/reopen.
+   - TOC parser now reads only the title portion before w:tab and does not
+     merge the page number into the heading text.
+   - cached Word TOC result paragraphs are removed from the editor buffer.
+   - v5.4 also removes consecutive stale TOC result copies created by v5.3
+     when they occur immediately after the TOC title.
+
+3. Python 3.13.x is sufficient for the current Windows configuration.
+
+v5.5
+----
+Исправлена повторная генерация TOC после reopen/save. Помимо точного сравнения
+с заголовками из Word TOC теперь удаляется весь непрерывный кешированный блок
+TOC сразу после Table of context, если Pandoc представил его строками вида
+"Heading 3" или "Heading ........ 3". Это также очищает несколько копий,
+накопленных в v5.3/v5.4.
+
+v5.6
+----
+Исправлено перемещение TOC при вставке строки перед заголовком Table of context.
+TOC-extmark теперь имеет right_gravity=true, поэтому команда O / Shift+O над заголовком
+двигает реальный заголовок и виртуальные строки TOC вместе как один визуальный блок.
+
+
+=== v5.7 ===
+Исправление TOC после v5.6:
+- right_gravity=true оставлен, чтобы Shift+O над заголовком TOC двигал заголовок и виртуальное содержание вместе.
+- создание TOC extmark перенесено на конец импорта DOCX, после восстановления списков/отступов/метаданных.
+- это предотвращает исчезновение виртуальных строк TOC из-за инициализационных nvim_buf_set_lines().
+
+
+=== v6.0: пустые Word-параграфы ===
+- Реальные пустые <w:p/> теперь сохраняются при DOCX -> Markdown -> DOCX.
+- При открытии Word Vim маркирует пустые абзацы только во временной копии DOCX.
+- В редакторе они отображаются как одна настоящая пустая строка.
+- При сохранении временный маркер удаляется из document.xml, но сам <w:p/> остается.
+- Обычные Markdown-разделители по-прежнему скрываются и не превращаются в лишние Word-параграфы.

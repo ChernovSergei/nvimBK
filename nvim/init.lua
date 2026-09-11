@@ -1,3 +1,19 @@
+-- Keep Neovim ZIP support for normal archives, but do not let
+-- the built-in zipPlugin claim .docx files. Word Vim owns *.docx.
+vim.g.zipPlugin_ext = table.concat({
+  "*.aar", "*.apk", "*.cbz", "*.celzip", "*.crtx",
+  "*.docm", "*.dotm", "*.dotx", "*.ear", "*.epub",
+  "*.gcsx", "*.glox", "*.gqsx", "*.ja", "*.jar", "*.kmz",
+  "*.odb", "*.odc", "*.odf", "*.odg", "*.odi", "*.odm",
+  "*.odp", "*.ods", "*.odt", "*.otc", "*.otf", "*.otg",
+  "*.oth", "*.oti", "*.otp", "*.ots", "*.ott", "*.oxt",
+  "*.pkpass", "*.potm", "*.potx", "*.ppam", "*.ppsm",
+  "*.ppsx", "*.pptm", "*.pptx", "*.sldx", "*.thmx",
+  "*.vdw", "*.war", "*.whl", "*.wsz", "*.xap", "*.xlam",
+  "*.xlsb", "*.xlsm", "*.xlsx", "*.xltm", "*.xltx",
+  "*.xpi", "*.zip",
+}, ",")
+
 --Plugins bootstrap FIRST
 require('core.plugins')
 
@@ -16,3 +32,7 @@ require('plugins.lsp')
 --require('plugins.null-ls')
 require('plugins.telescope')
 require("plugins.conform")
+
+
+-- Word Vim: DOCX editing profile
+require("wordvim").setup()

@@ -222,8 +222,12 @@ end
 
 local function set_caption_mark(buf, row, kind, bookmark)
   local s = get_state(buf)
+  -- Keep caption metadata attached to the original caption paragraph when a
+  -- new paragraph is inserted exactly before it (for example with O).
+  -- With left gravity the mark stays on the newly inserted row and refresh()
+  -- rewrites that row as another caption, duplicating the visible caption.
   local id = vim.api.nvim_buf_set_extmark(buf, ns, row, 0, {
-    right_gravity = false,
+    right_gravity = true,
   })
 
   s.captions[id] = {
@@ -239,7 +243,9 @@ local function set_ref_mark(buf, row, start_col, end_col, kind, bookmark)
   local id = vim.api.nvim_buf_set_extmark(buf, ns, row, start_col, {
     end_row = row,
     end_col = end_col,
-    right_gravity = false,
+    -- Follow the referenced text if a new paragraph/text is inserted exactly
+    -- at the start boundary. This mirrors paragraph-style/caption behavior.
+    right_gravity = true,
     end_right_gravity = true,
   })
 
@@ -299,7 +305,29 @@ function M.refresh(buf)
         end
 
         if line ~= wanted then
-          vim.api.nvim_buf_set_lines(buf, item.row, item.row + 1, false, { wanted })
+          -- A caption extmark uses right_gravity=true so that inserting a new
+          -- paragraph exactly before the caption (O / Shift+O) keeps the mark
+          -- attached to the original caption paragraph.  Replacing the whole
+          -- caption line while that mark is still present, however, is also an
+          -- insertion at the mark boundary.  Neovim can therefore move the
+          -- mark to the following row.  The next refresh then treats that row
+          -- as the caption and rewrites it too, producing a cascade of
+          -- duplicate "Figure N" lines.
+          --
+          -- Remove the mark while normalising its own visible text and recreate
+          -- it on the same row afterwards.  This preserves right-gravity for
+          -- user edits without allowing refresh() to move its own metadata.
+          local meta = s.captions[item.id]
+          if meta then
+            local kind_meta = meta.kind
+            local bookmark_meta = meta.bookmark
+            pcall(vim.api.nvim_buf_del_extmark, buf, ns, item.id)
+            s.captions[item.id] = nil
+            vim.api.nvim_buf_set_lines(buf, item.row, item.row + 1, false, { wanted })
+            set_caption_mark(buf, item.row, kind_meta, bookmark_meta)
+          else
+            vim.api.nvim_buf_set_lines(buf, item.row, item.row + 1, false, { wanted })
+          end
         end
       end
     end
@@ -321,39 +349,71 @@ function M.refresh(buf)
         local pos = ref_pos(buf, item.id)
 
         if pos then
+          local line_count = vim.api.nvim_buf_line_count(buf)
           local erow = pos.details.end_row or pos.row
           local ecol = pos.details.end_col or pos.col
 
-          local existing = vim.api.nvim_buf_get_text(
-            buf,
-            pos.row,
-            pos.col,
-            erow,
-            ecol,
-            {}
-          )
-          local existing_text = table.concat(existing, "\n")
+          -- A user may delete a REF with ordinary editing commands instead of
+          -- Word Vim's dd wrapper. In that case Neovim keeps the extmark, but
+          -- its old range can collapse or point past the new end of the line.
+          -- Calling nvim_buf_get_text() with that stale range raises
+          -- "Index out of bounds". Treat such a collapsed/stale range as a
+          -- deleted cross-reference and remove its metadata instead of trying
+          -- to recreate the visible REF text.
+          local stale = false
 
-          if existing_text ~= wanted then
-            vim.api.nvim_buf_set_text(
+          if pos.row < 0 or pos.row >= line_count then
+            stale = true
+          elseif erow ~= pos.row then
+            stale = true
+          else
+            local line = vim.api.nvim_buf_get_lines(buf, pos.row, pos.row + 1, false)[1] or ""
+            local line_len = #line
+
+            if pos.col < 0 or pos.col > line_len then
+              stale = true
+            elseif ecol < pos.col or ecol > line_len then
+              stale = true
+            elseif ecol == pos.col then
+              stale = true
+            end
+          end
+
+          if stale then
+            pcall(vim.api.nvim_buf_del_extmark, buf, ns, item.id)
+            s.refs[item.id] = nil
+          else
+            local existing = vim.api.nvim_buf_get_text(
               buf,
               pos.row,
               pos.col,
               erow,
               ecol,
-              { wanted }
+              {}
             )
+            local existing_text = table.concat(existing, "\n")
 
-            pcall(vim.api.nvim_buf_del_extmark, buf, ns, item.id)
-            s.refs[item.id] = nil
-            set_ref_mark(
-              buf,
-              pos.row,
-              pos.col,
-              pos.col + #wanted,
-              item.kind,
-              item.bookmark
-            )
+            if existing_text ~= wanted then
+              vim.api.nvim_buf_set_text(
+                buf,
+                pos.row,
+                pos.col,
+                erow,
+                ecol,
+                { wanted }
+              )
+
+              pcall(vim.api.nvim_buf_del_extmark, buf, ns, item.id)
+              s.refs[item.id] = nil
+              set_ref_mark(
+                buf,
+                pos.row,
+                pos.col,
+                pos.col + #wanted,
+                item.kind,
+                item.bookmark
+              )
+            end
           end
         end
       end
@@ -433,8 +493,27 @@ local function insert_caption(kind)
     end
 
     vim.api.nvim_buf_set_lines(buf, insert_row, insert_row, false, { input })
+
+    -- A Word caption is not only cross-reference metadata; it is also a
+    -- paragraph with the Word paragraph style "caption".  Keep the style
+    -- metadata in sync at creation time so the Style UI immediately shows
+    -- Caption instead of Normal.
+    local ok_styles, styles = pcall(require, "wordvim.styles")
+    if ok_styles and styles and styles.set_paragraph_style then
+      styles.set_paragraph_style(buf, insert_row, "caption")
+    end
+
     set_caption_mark(buf, insert_row, kind, nil)
     M.refresh(buf)
+
+    -- refresh() may replace the whole caption line while normalising its
+    -- visible number. Paragraph-style extmarks also use right_gravity=true,
+    -- so that replacement can move the style mark to the following row.
+    -- Re-assert Caption after refresh so the caption paragraph itself always
+    -- owns the Word Caption style.
+    if ok_styles and styles and styles.set_paragraph_style then
+      styles.set_paragraph_style(buf, insert_row, "caption")
+    end
 
     pcall(vim.api.nvim_win_set_cursor, 0, { insert_row + 1, 0 })
   end)
@@ -788,6 +867,17 @@ function M.restore_from_docx(buf, docx)
 
     if found ~= nil then
       used_rows[found] = true
+
+      -- Pandoc can flatten/reconstruct a figure caption in a way that leaves
+      -- the visible paragraph as Normal in the editor even though the DOCX
+      -- caption metadata (SEQ/bookmark) was restored successfully.  Once we
+      -- have authoritatively matched a DOCX caption, restore its Word
+      -- paragraph style as well.
+      local ok_styles, styles = pcall(require, "wordvim.styles")
+      if ok_styles and styles and styles.set_paragraph_style then
+        styles.set_paragraph_style(buf, found, "caption")
+      end
+
       set_caption_mark(buf, found, cap.kind, cap.bookmark)
     end
   end
@@ -820,6 +910,16 @@ function M.restore_from_docx(buf, docx)
   end
 
   M.refresh(buf)
+
+  -- The refresh pass above can rewrite caption rows (for example to normalise
+  -- Figure/Table numbering). Re-apply the paragraph style afterwards so a
+  -- reopened real Word caption is displayed as Caption rather than Normal.
+  local ok_styles, styles = pcall(require, "wordvim.styles")
+  if ok_styles and styles and styles.set_paragraph_style then
+    for _, item in ipairs(sorted_caption_items(buf)) do
+      styles.set_paragraph_style(buf, item.row, "caption")
+    end
+  end
 end
 
 function M.apply_to_docx(docx, buf)

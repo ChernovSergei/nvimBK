@@ -1,3 +1,7 @@
+Word Vim integrated v6.6
+
+Изменение v6.6: при открытии DOCX Pandoc-синтаксис настоящих Word cross-reference (REF + PAGEREF) автоматически сворачивается обратно в компактный вид `Figure N, page N` / `Table N, page N`; bookmark/extmark восстанавливаются через crossrefs.lua.
+
 1) F droid installation and termux/termux-app from it
 2) Packages installation in termux
 3) Install ubuntu terminal using proot-distro using termux 
@@ -395,3 +399,44 @@ there is no complete mvn debug function ready from the box.
 it would be alias a function inside ~/.bashrc
 
 alias mvn-debug-ns='mvn spring-boot:run -Dspring-boot.run.jvmArugments="-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005"'
+
+Word Vim v6.1 — Telescope image picker
+--------------------------------------
+Inside a DOCX buffer:
+  Space i i
+      Open Telescope and select an image from the current DOCX folder.
+      With ripgrep installed, only supported image files are shown.
+
+  :WordImagePicker
+      Same picker from the current DOCX folder.
+
+  :WordImagePicker C:\\Users\\Leo\\Pictures
+      Start the picker in another folder.
+
+  :WordImage C:\\path\\image.png
+      Fallback direct insertion without Telescope.
+
+After selection Word Vim asks for alt text and width. Width may be blank,
+8cm, 120mm, 50%, etc. The image is inserted as a separate paragraph after
+the current line. Existing WordImageWidth/Scale/Resize/Rotate/Reset commands
+continue to work.
+
+Word Vim v6.4 image caption workflow:
+  Space+i+i -> select image in Neo-tree -> Width -> Add Figure caption?
+  Yes uses the same real Word Figure caption engine as Space+c+f (SEQ Figure + bookmark + cross-reference support).
+  No inserts only the image; caption can be added later with Space+c+f.
+
+Word Vim v6.5 — image + caption round-trip fix
+- DOCX reopen now recognizes Pandoc raw HTML <figure>/<figcaption> blocks.
+- The editor again shows one compact Markdown image row plus the real Figure caption row.
+- Figure SEQ/bookmark/cross-reference metadata is restored by the existing crossrefs.lua mechanism.
+- Image paragraph and Caption paragraph styles are preserved as hidden Word styles.
+- Word/Pandoc inch widths such as 3.14961in are normalized back to a friendly metric width (8cm) when exact.
+
+Word Vim v6.13 paragraph-style engine
+-------------------------------------
+- Every real editor paragraph now has explicit style metadata, including Normal.
+- Enter, o and O create a new Normal paragraph without stealing the style of the neighbouring paragraph.
+- Empty Word paragraphs show their style number in the Style UI gutter.
+- Style gutter refresh after insert-mode edits is deferred until textlock ends, preventing temporary gutter corruption/flicker.
+- Shift+Enter remains a continuation of the same Word paragraph and does not create an independent style.

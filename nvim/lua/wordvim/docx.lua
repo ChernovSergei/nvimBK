@@ -109,9 +109,91 @@ try {
     $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
     $ns.AddNamespace('w', $nsUri)
 
-    $paragraphs = $xml.SelectNodes('//w:body//w:p', $ns)
+    $paragraphs = @($xml.SelectNodes('//w:body//w:p', $ns))
 
     foreach ($p in $paragraphs) {
+        # ------------------------------------------------------------
+        # Word Vim read-copy sanitisation (v6.12)
+        # ------------------------------------------------------------
+        # Pandoc tries to interpret Word SEQ/REF/PAGEREF fields and our
+        # internal bookmarks as Markdown links/anchors.  Across repeated
+        # save/open cycles that representation is not stable and can leak
+        # strings such as []{#_WordVim_Figure_...} or verbose Hyperlink
+        # spans into the editor.
+        #
+        # The ORIGINAL DOCX is never touched here.  On this temporary read
+        # copy only, flatten Word Vim fields to their already cached visible
+        # result text before Pandoc sees them.  crossrefs.restore_from_docx()
+        # later reads the authoritative SEQ/REF/PAGEREF/bookmark metadata
+        # directly from the untouched original document.xml.
+
+        $instrParts = @()
+        foreach ($instr in $p.SelectNodes('.//w:instrText', $ns)) {
+            $instrParts += [string]$instr.InnerText
+        }
+        $allInstr = ($instrParts -join ' ')
+
+        $isWordVimCaption = $allInstr -match 'SEQ\s+(Figure|Table)'
+        $hasWordVimRef = $allInstr -match '(REF|PAGEREF)\s+_WordVim_(Figure|Table)_'
+
+        if ($isWordVimCaption) {
+            # Keep the visible label / field result / title runs, but remove
+            # field machinery and internal bookmark anchors from the read
+            # copy.  Also neutralise Caption style in the read copy so Pandoc
+            # does not synthesize an HTML <figure>/<figcaption> block.
+            $removeRuns = @($p.SelectNodes('.//w:r[w:fldChar or w:instrText]', $ns))
+            foreach ($r in $removeRuns) {
+                if ($null -ne $r.ParentNode) { [void]$r.ParentNode.RemoveChild($r) }
+            }
+
+            $bookmarkNodes = @($p.SelectNodes('.//w:bookmarkStart | .//w:bookmarkEnd', $ns))
+            foreach ($bm in $bookmarkNodes) {
+                if ($null -ne $bm.ParentNode) { [void]$bm.ParentNode.RemoveChild($bm) }
+            }
+
+            $pPr = $p.SelectSingleNode('w:pPr', $ns)
+            if ($null -ne $pPr) {
+                $pStyle = $pPr.SelectSingleNode('w:pStyle', $ns)
+                if ($null -ne $pStyle) {
+                    [void]$pPr.RemoveChild($pStyle)
+                }
+            }
+        }
+        elseif ($hasWordVimRef) {
+            # For REF/PAGEREF paragraphs keep the cached visible field result
+            # text and all ordinary surrounding runs, but remove begin /
+            # instruction / separate / end runs.  Without the field codes
+            # Pandoc has nothing to turn into internal Markdown hyperlinks.
+            $removeRuns = @($p.SelectNodes('.//w:r[w:fldChar or w:instrText]', $ns))
+            foreach ($r in $removeRuns) {
+                if ($null -ne $r.ParentNode) { [void]$r.ParentNode.RemoveChild($r) }
+            }
+
+            # Word Vim bookmarks are implementation details.  REF paragraphs
+            # should not normally contain them, but remove any stale ones from
+            # old round-trips in the temporary copy as a repair path.
+            $bookmarkNodes = @($p.SelectNodes('.//w:bookmarkStart[starts-with(@w:name, "_WordVim_")] | .//w:bookmarkEnd', $ns))
+            foreach ($bm in $bookmarkNodes) {
+                if ($null -ne $bm.ParentNode) { [void]$bm.ParentNode.RemoveChild($bm) }
+            }
+        }
+        else {
+            # Old Word Vim builds could leave an internal bookmark anchor in a
+            # paragraph that no longer contains a SEQ field.  Hide only the
+            # implementation bookmark on the Pandoc read copy; keep its text.
+            $wordVimStarts = @($p.SelectNodes('.//w:bookmarkStart[starts-with(@w:name, "_WordVim_")]', $ns))
+            foreach ($bmStart in $wordVimStarts) {
+                $id = $bmStart.GetAttribute('id', $nsUri)
+                if ($null -ne $bmStart.ParentNode) { [void]$bmStart.ParentNode.RemoveChild($bmStart) }
+                if (-not [string]::IsNullOrWhiteSpace($id)) {
+                    $ends = @($p.SelectNodes('.//w:bookmarkEnd[@w:id="' + $id + '"]', $ns))
+                    foreach ($bmEnd in $ends) {
+                        if ($null -ne $bmEnd.ParentNode) { [void]$bmEnd.ParentNode.RemoveChild($bmEnd) }
+                    }
+                }
+            }
+        }
+
         # A paragraph is considered truly empty only when it contains no
         # visible text and no structural inline object/field/break/tab.
         # Paragraph properties (w:pPr) are intentionally allowed.
@@ -577,14 +659,11 @@ local function clean_style_blocks(lines)
           i = i + 1
         end
 
-        -- "Normal" is the default Word paragraph style, so there
-        -- is no reason to track it with an extmark. All other
-        -- paragraph styles remain hidden and are reconstructed
-        -- on save.
-        if
-          first_content_row
-          and style_name:lower() ~= "normal"
-        then
+        -- Every real Word paragraph keeps an explicit style marker,
+        -- INCLUDING Normal.  Normal is not treated as "missing metadata"
+        -- anymore: this makes paragraph identity stable during o/O/Enter,
+        -- image insertion and later DOCX saves.
+        if first_content_row then
           table.insert(assignments, {
             row = first_content_row,
             style = style_name,
@@ -602,6 +681,350 @@ local function clean_style_blocks(lines)
   end
 
   return clean, assignments
+end
+
+-- ============================================================
+-- Normalize Pandoc HTML <figure> blocks back to Word Vim rows
+-- ============================================================
+--
+-- When an image paragraph is followed by a real Word Caption, Pandoc may
+-- serialize the pair as raw HTML instead of ordinary Markdown, for example:
+--
+--   <figure data-custom-style="Body Text">
+--   <img src=".../media/rId295.png" style="width:3.14961in;height:6.28831in" />
+--   <figcaption><div data-custom-style="Caption">
+--   <p>Figure 1 - test</p>
+--   </div></figcaption>
+--   </figure>
+--
+-- Word Vim must never expose that conversion artifact to the editor.  Collapse
+-- it back to exactly two logical rows: a Markdown image and the visible caption
+-- text. crossrefs.restore_from_docx() then reattaches the authoritative SEQ /
+-- bookmark metadata from word/document.xml, just as it does for captions that
+-- were created manually.
+local function normalize_pandoc_figures(lines)
+  local result = {}
+  local i = 1
+
+  local function html_decode(value)
+    value = tostring(value or "")
+
+    value = value:gsub("&#[xX]([0-9a-fA-F]+);", function(hex)
+      local n = tonumber(hex, 16)
+      if not n then
+        return ""
+      end
+      local ok, ch = pcall(vim.fn.nr2char, n)
+      return ok and ch or ""
+    end)
+
+    value = value:gsub("&#(%d+);", function(dec)
+      local n = tonumber(dec, 10)
+      if not n then
+        return ""
+      end
+      local ok, ch = pcall(vim.fn.nr2char, n)
+      return ok and ch or ""
+    end)
+
+    -- Decode ampersand last so an entity such as &amp;lt; does not get
+    -- decoded twice in a single pass.
+    value = value:gsub("&quot;", '"')
+    value = value:gsub("&apos;", "'")
+    value = value:gsub("&#39;", "'")
+    value = value:gsub("&lt;", "<")
+    value = value:gsub("&gt;", ">")
+    value = value:gsub("&nbsp;", " ")
+    value = value:gsub("&amp;", "&")
+
+    return value
+  end
+
+  local function attr_value(tag, name)
+    local double = tag:match(name .. '%s*=%s*"([^"]*)"')
+    if double ~= nil then
+      return html_decode(double)
+    end
+
+    local single = tag:match(name .. "%s*=%s*'([^']*)'")
+    if single ~= nil then
+      return html_decode(single)
+    end
+
+    return nil
+  end
+
+  local function pretty_width(width)
+    width = vim.trim(tostring(width or ""))
+    if width == "" then
+      return ""
+    end
+
+    local inches = width:match("^([%d%.]+)in$")
+    if inches then
+      local value = tonumber(inches)
+      if value then
+        local cm = value * 2.54
+        local rounded = math.floor(cm * 100 + 0.5) / 100
+
+        -- Pandoc/Word commonly writes values such as 3.14961in for an
+        -- original 8cm width.  Show the friendly metric form again when
+        -- conversion lands cleanly on hundredths of a centimetre.
+        if math.abs(cm - rounded) < 0.001 then
+          local text = string.format("%.2f", rounded)
+          text = text:gsub("0+$", ""):gsub("%.$", "")
+          return text .. "cm"
+        end
+      end
+    end
+
+    return width
+  end
+
+  local function caption_text(fragment)
+    fragment = tostring(fragment or "")
+    fragment = fragment:gsub("<[bB][rR]%s*/?>", " ")
+    fragment = fragment:gsub("<[^>]->", " ")
+    fragment = html_decode(fragment)
+    fragment = fragment:gsub("%s+", " ")
+    return vim.trim(fragment)
+  end
+
+  while i <= #lines do
+    if tostring(lines[i]):match("^%s*<figure[%s>]?") then
+      local block = { lines[i] }
+      local j = i + 1
+      local closed = tostring(lines[i]):find("</figure>", 1, true) ~= nil
+
+      while j <= #lines and not closed do
+        table.insert(block, lines[j])
+        if tostring(lines[j]):find("</figure>", 1, true) then
+          closed = true
+        end
+        j = j + 1
+      end
+
+      if closed then
+        local html = table.concat(block, "\n")
+        local img_tag = html:match("<img%s+.-%s*/?>")
+          or html:match("<img%s+.-%s*>")
+
+        local src = img_tag and attr_value(img_tag, "src") or nil
+
+        if src and src ~= "" then
+          -- Forward slashes are safer inside Markdown destinations on Windows;
+          -- Pandoc accepts them and can still read the extracted temporary file.
+          src = src:gsub("\\", "/")
+
+          local width = ""
+          local style = attr_value(img_tag, "style") or ""
+          width = style:match("[Ww][Ii][Dd][Tt][Hh]%s*:%s*([^;]+)") or ""
+
+          if width == "" then
+            width = attr_value(img_tag, "width") or ""
+          end
+
+          width = pretty_width(width)
+
+          local image_line = "![](<" .. src .. ">)"
+          if width ~= "" then
+            image_line = image_line .. "{width=" .. width .. "}"
+          end
+
+          local figure_tag = html:match("<figure[^>]*>") or ""
+          local figure_style = attr_value(figure_tag, "data%-custom%-style") or ""
+
+          -- Re-create a temporary fenced custom-style wrapper so the existing
+          -- clean_style_blocks() path can preserve the Word paragraph style as
+          -- a hidden extmark without showing any HTML to the user.
+          if figure_style ~= "" and figure_style:lower() ~= "normal" then
+            table.insert(result, '::: {custom-style="' .. figure_style .. '"}')
+            table.insert(result, image_line)
+            table.insert(result, ":::")
+          else
+            table.insert(result, image_line)
+          end
+
+          local figcaption = html:match("<figcaption[^>]*>(.-)</figcaption>")
+          local text = caption_text(figcaption)
+          if text ~= "" then
+            local caption_div = figcaption and figcaption:match("<div[^>]*>") or ""
+            local caption_style = attr_value(caption_div, "data%-custom%-style") or ""
+
+            if caption_style ~= "" and caption_style:lower() ~= "normal" then
+              table.insert(result, '::: {custom-style="' .. caption_style .. '"}')
+              table.insert(result, text)
+              table.insert(result, ":::")
+            else
+              table.insert(result, text)
+            end
+          end
+
+          i = j
+        else
+          -- Unknown/foreign figure shape: leave it untouched rather than
+          -- destroying content we cannot confidently reconstruct.
+          for _, line in ipairs(block) do
+            table.insert(result, line)
+          end
+          i = j
+        end
+      else
+        table.insert(result, lines[i])
+        i = i + 1
+      end
+    else
+      table.insert(result, lines[i])
+      i = i + 1
+    end
+  end
+
+  return result
+end
+
+
+-- ============================================================
+-- Normalize Pandoc hyperlink syntax for Word REF/PAGEREF fields
+-- ============================================================
+--
+-- A real Word cross-reference created by crossrefs.lua can be emitted by
+-- Pandoc as verbose Markdown hyperlinks, for example:
+--
+--   [Figure 1]{custom-style="Hyperlink"}(#X...), page [[1]{custom-style="Hyperlink"}](#X...)
+--
+-- The DOCX remains correct; this is only Pandoc's editor representation.  The
+-- authoritative bookmark/REF metadata is restored later by
+-- crossrefs.restore_from_docx().  Here we only collapse the visible syntax to
+-- the compact Word Vim form expected by that restoration pass:
+--
+--   Figure 1, page 1
+--
+-- Do this before compact_editor_lines(), while Pandoc's raw inline syntax is
+-- still intact.
+local function normalize_pandoc_crossrefs(lines)
+  local result = vim.deepcopy(lines)
+
+  local function collapse(line, label)
+    -- Pandoc commonly emits the first REF result as
+    -- [Figure 1]{custom-style="Hyperlink"}(#bookmark)
+    -- and PAGEREF as
+    -- [[1]{custom-style="Hyperlink"}](#bookmark).
+    -- Bookmark ids are deliberately captured and compared when possible so we
+    -- do not accidentally collapse unrelated hyperlinks that merely resemble a
+    -- cross-reference.
+    local escaped = vim.pesc(label)
+
+    local pattern =
+      "%[" .. escaped .. "%s+(%d+)%]%{custom%-style=[\"']Hyperlink[\"']%}%((#[^%)]+)%)" ..
+      "%s*,%s*page%s*" ..
+      "%[%[(%d+)%]%{custom%-style=[\"']Hyperlink[\"']%}%((#[^%)]+)%)%]"
+
+    line = line:gsub(pattern, function(number, ref_target, page, page_target)
+      if ref_target == page_target then
+        return label .. " " .. number .. ", page " .. page
+      end
+      return "[" .. label .. " " .. number .. "]{custom-style=\"Hyperlink\"}(" .. ref_target ..
+        "), page [[" .. page .. "]{custom-style=\"Hyperlink\"}](" .. page_target .. ")"
+    end)
+
+    -- Pandoc can also wrap the styled REF text in an outer Markdown link:
+    --   [[Figure 1]{custom-style="Hyperlink"}](#bookmark), page
+    --   [[1]{custom-style="Hyperlink"}](#bookmark)
+    -- This is the exact representation seen in Word Vim v6.10 after reopening
+    -- some DOCX files. Collapse it as well, but only when REF and PAGEREF point
+    -- to the same bookmark.
+    local wrapped =
+      "%[%[" .. escaped .. "%s+(%d+)%]%{custom%-style=[\"']Hyperlink[\"']%}%((#[^%)]+)%)%]" ..
+      "%s*,%s*page%s*" ..
+      "%[%[(%d+)%]%{custom%-style=[\"']Hyperlink[\"']%}%((#[^%)]+)%)%]"
+
+    line = line:gsub(wrapped, function(number, ref_target, page, page_target)
+      if ref_target == page_target then
+        return label .. " " .. number .. ", page " .. page
+      end
+      return "[[" .. label .. " " .. number .. "]{custom-style=\"Hyperlink\"}](" .. ref_target ..
+        "), page [[" .. page .. "]{custom-style=\"Hyperlink\"}](" .. page_target .. ")"
+    end)
+
+    -- Some Pandoc versions omit the custom-style span while preserving both
+    -- internal links. Support that representation too.
+    local simple =
+      "%[" .. escaped .. "%s+(%d+)%]%((#[^%)]+)%)" ..
+      "%s*,%s*page%s*" ..
+      "%[(%d+)%]%((#[^%)]+)%)"
+
+    line = line:gsub(simple, function(number, ref_target, page, page_target)
+      if ref_target == page_target then
+        return label .. " " .. number .. ", page " .. page
+      end
+      return "[" .. label .. " " .. number .. "](" .. ref_target .. "), page [" .. page .. "](" .. page_target .. ")"
+    end)
+
+    return line
+  end
+
+  for i, line in ipairs(result) do
+    line = collapse(tostring(line), "Figure")
+    line = collapse(line, "Table")
+    result[i] = line
+  end
+
+  return result
+end
+
+-- ============================================================
+-- Canonicalize ordinary Pandoc image dimensions
+-- ============================================================
+-- Pandoc/Word may reopen an image originally entered as width=8cm as
+-- width="3.149606...in" height="...in".  Word Vim only needs the explicit
+-- width for its editor representation; the aspect ratio is preserved by Word.
+-- Convert inch widths back to a friendly cm value and drop Pandoc's derived
+-- height so repeated save/open cycles stay visually stable.
+local function normalize_pandoc_image_dimensions(lines)
+  local result = vim.deepcopy(lines)
+
+  local function in_to_cm(text)
+    local n = tonumber(text)
+    if not n then
+      return nil
+    end
+    local cm = n * 2.54
+    local rounded = math.floor(cm * 100 + 0.5) / 100
+    local out = string.format("%.2f", rounded):gsub("0+$", ""):gsub("%.$", "")
+    return out .. "cm"
+  end
+
+  for i, raw in ipairs(result) do
+    local line = tostring(raw or "")
+    if line:match("!%[") then
+      -- Quoted Pandoc attributes: {width="3.1496in" height="2.34in"}
+      line = line:gsub(
+        '{%s*width="([%d%.]+)in"%s+height="[%d%.]+in"%s*}',
+        function(width)
+          local cm = in_to_cm(width)
+          return cm and ("{width=" .. cm .. "}") or ("{width=\"" .. width .. "in\"}")
+        end
+      )
+
+      -- Same form without quotes.
+      line = line:gsub(
+        '{%s*width=([%d%.]+)in%s+height=[%d%.]+in%s*}',
+        function(width)
+          local cm = in_to_cm(width)
+          return cm and ("{width=" .. cm .. "}") or ("{width=" .. width .. "in}")
+        end
+      )
+
+      -- Width-only quoted attribute.
+      line = line:gsub('width="([%d%.]+)in"', function(width)
+        local cm = in_to_cm(width)
+        return cm and ("width=" .. cm) or ("width=\"" .. width .. "in\"")
+      end)
+    end
+    result[i] = line
+  end
+
+  return result
 end
 
 local function compact_editor_lines(lines, assignments)
@@ -1247,6 +1670,19 @@ local function open_docx(args)
   local raw_lines = vim.fn.readfile(temp_md)
   vim.fn.delete(temp_md)
 
+  -- Pandoc can expose an image + real Word Caption as raw HTML <figure>.
+  -- Convert that import artifact back to Word Vim's compact editor rows before
+  -- paragraph-style cleanup and before crossrefs.restore_from_docx() runs.
+  raw_lines = normalize_pandoc_figures(raw_lines)
+
+  -- Collapse Pandoc's verbose representation of real Word REF/PAGEREF
+  -- hyperlinks back to the compact text Word Vim shows in the editor.
+  raw_lines = normalize_pandoc_crossrefs(raw_lines)
+
+  -- Canonicalize image dimensions so 8cm does not drift to a long Pandoc
+  -- inch + height attribute after repeated DOCX round-trips.
+  raw_lines = normalize_pandoc_image_dimensions(raw_lines)
+
   local lines, assignments = clean_style_blocks(raw_lines)
 
   -- Keep the Neovim view compact: Word paragraphs are adjacent
@@ -1320,6 +1756,12 @@ local function open_docx(args)
   -- (for example Shift+O above the TOC title) without the anchor being
   -- displaced by initialization-time whole-buffer rewrites.
   toc.finish_open(buf)
+
+  -- v6.13 paragraph-style engine: every editor paragraph has explicit
+  -- style metadata.  This also fills Normal for rows that Pandoc did not
+  -- wrap in a custom-style block, while preserving imported Heading, Body
+  -- Text, Caption, etc. markers that already exist.
+  styles.ensure_explicit_styles(buf)
 
   vim.bo[buf].modified = false
 

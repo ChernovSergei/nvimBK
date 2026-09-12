@@ -290,17 +290,16 @@ local function build_paragraph_model(session)
     local line = line_at(buf, row)
     local prev = row > 0 and line_at(buf, row - 1) or ""
 
-    if is_blank(line) then
-      current_start = nil
-      current_style = nil
-
-    elseif row > 0 and ends_hard_break(prev) and current_start ~= nil then
+    if row > 0 and ends_hard_break(prev) and current_start ~= nil then
       -- Shift+Enter: this editor row is still part of the SAME
       -- Word paragraph, so it gets the same color but no number.
       paragraph_start[row] = current_start
       paragraph_style[row] = current_style
 
     else
+      -- A blank editor row can be a REAL empty Word paragraph (v6.0+).
+      -- It therefore receives the same style-number treatment as a
+      -- non-empty paragraph instead of disappearing from the gutter.
       -- In the compact Word Vim editor every ordinary visible row
       -- represents the START of a new Word paragraph.
       --
@@ -377,10 +376,10 @@ local function render_left(session)
       local value = ""
 
       if
-        not is_blank(line)
-        and visual_part == 1
+        visual_part == 1
         and session.paragraph_start[row] == row
       then
+        -- Empty rows are real Word paragraphs too, so show their style number.
         value = number and tostring(number) or "?"
       end
 
@@ -1185,11 +1184,25 @@ function M.setup()
     {
       group = group,
       callback = function(args)
-        local session = sessions[args.buf]
+        local buf = args.buf
+        local session = sessions[buf]
 
-        if session then
-          refresh(session)
+        if not session or session.text_refresh_pending then
+          return
         end
+
+        -- TextChangedI can run while Neovim still has an insert-mode textlock.
+        -- Rewriting the style gutter synchronously at that point caused the
+        -- transient disappearing/changing style column seen with o/O/Enter.
+        session.text_refresh_pending = true
+        vim.schedule(function()
+          local current = sessions[buf]
+          if current then
+            current.text_refresh_pending = false
+            refresh(current)
+            sync_left_view(current)
+          end
+        end)
       end,
     }
   )

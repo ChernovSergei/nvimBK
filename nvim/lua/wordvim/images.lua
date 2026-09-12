@@ -17,6 +17,14 @@
 
 local M = {}
 
+-- Temporary state used only while Neo-tree is acting as the
+-- Word Vim image selector. Normal Neo-tree usage is unchanged.
+local neo_tree_picker = {
+  active = false,
+  target_buf = nil,
+  target_win = nil,
+}
+
 local function normalize_path(path)
   path = vim.trim(path or "")
   path = path:gsub("\\", "/")
@@ -46,6 +54,23 @@ local function escape_alt(text)
   text = text:gsub("%[", "\\[")
   text = text:gsub("%]", "\\]")
   return text
+end
+
+local image_extensions = {
+  png = true,
+  jpg = true,
+  jpeg = true,
+  webp = true,
+  gif = true,
+  bmp = true,
+  tif = true,
+  tiff = true,
+  svg = true,
+}
+
+local function is_supported_image(path)
+  local ext = vim.fn.fnamemodify(path or "", ":e"):lower()
+  return image_extensions[ext] == true
 end
 
 local function current_line()
@@ -399,20 +424,7 @@ local function insert_image_path(path)
     return
   end
 
-  local ext = vim.fn.fnamemodify(path, ":e"):lower()
-  local allowed = {
-    png = true,
-    jpg = true,
-    jpeg = true,
-    webp = true,
-    gif = true,
-    bmp = true,
-    tif = true,
-    tiff = true,
-    svg = true,
-  }
-
-  if not allowed[ext] then
+  if not is_supported_image(path) then
     vim.notify(
       "Word Vim: selected file is not a supported image: " .. path,
       vim.log.levels.WARN
@@ -420,17 +432,14 @@ local function insert_image_path(path)
     return
   end
 
-  local caption = vim.fn.input("Caption/alt text (optional): ")
   local width = vim.fn.input(
     "Width (blank = natural, examples: 8cm, 120mm, 50%): "
   )
 
-  local line =
-    "!["
-    .. escape_alt(caption)
-    .. "](<"
-    .. path
-    .. ">)"
+  -- Do not use Markdown alt text as a pseudo-caption. Word Vim captions are
+  -- handled centrally by crossrefs.lua so Figure numbering/bookmarks/REF fields
+  -- are identical whether the caption is added manually or after image insert.
+  local line = "![](<" .. path .. ">)"
 
   width = vim.trim(width)
 
@@ -438,6 +447,7 @@ local function insert_image_path(path)
     line = line .. "{width=" .. width .. "}"
   end
 
+  local before_row = vim.api.nvim_win_get_cursor(0)[1]
   vim.api.nvim_put(
     { line },
     "l",
@@ -445,10 +455,34 @@ local function insert_image_path(path)
     true
   )
 
+  -- Keep the cursor on the newly inserted image. insert_figure_caption() uses
+  -- the current row to decide where the real Word Figure caption belongs.
+  local image_row = math.min(before_row + 1, vim.api.nvim_buf_line_count(0))
+  pcall(vim.api.nvim_win_set_cursor, 0, { image_row, 0 })
+
   vim.notify(
     "Word Vim: image inserted",
     vim.log.levels.INFO
   )
+
+  local add_caption = vim.fn.confirm(
+    "Add Figure caption?",
+    "&Yes\n&No",
+    2
+  )
+
+  if add_caption == 1 then
+    local ok, crossrefs = pcall(require, "wordvim.crossrefs")
+    if not ok or type(crossrefs.insert_figure_caption) ~= "function" then
+      vim.notify(
+        "Word Vim: Figure caption module is not available",
+        vim.log.levels.ERROR
+      )
+      return
+    end
+
+    crossrefs.insert_figure_caption()
+  end
 end
 
 local function insert_image(opts)
@@ -461,17 +495,82 @@ local function insert_image(opts)
   insert_image_path(path)
 end
 
-local function telescope_image_picker()
+local function windows_drives()
+  if vim.fn.has("win32") ~= 1 then
+    return {}
+  end
+
+  local output = vim.fn.systemlist({
+    "powershell",
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-Command",
+    "Get-PSDrive -PSProvider FileSystem | Select-Object -ExpandProperty Root",
+  })
+
+  local drives = {}
+  if vim.v.shell_error == 0 then
+    for _, drive in ipairs(output) do
+      drive = vim.trim(drive or "")
+      if drive ~= "" and vim.fn.isdirectory(drive) == 1 then
+        table.insert(drives, normalize_path(drive))
+      end
+    end
+  end
+
+  if #drives == 0 and vim.fn.isdirectory("C:/") == 1 then
+    table.insert(drives, "C:/")
+  end
+
+  return drives
+end
+
+local function directory_entries(cwd)
+  local entries = {}
+
+  for _, name in ipairs(vim.fn.readdir(cwd)) do
+    local full = normalize_path(cwd .. "/" .. name)
+    if vim.fn.isdirectory(full) == 1 then
+      table.insert(entries, {
+        display = "[DIR]  " .. name,
+        ordinal = "0 " .. name,
+        path = full,
+        kind = "dir",
+      })
+    elseif vim.fn.filereadable(full) == 1 and is_supported_image(full) then
+      table.insert(entries, {
+        display = "[IMG]  " .. name,
+        ordinal = "1 " .. name,
+        path = full,
+        kind = "image",
+      })
+    end
+  end
+
+  table.sort(entries, function(a, b)
+    if a.kind ~= b.kind then
+      return a.kind == "dir"
+    end
+    return a.display:lower() < b.display:lower()
+  end)
+
+  return entries
+end
+
+local function telescope_image_picker(root_dir)
   if not vim.b.wordvim_docx then
     vim.notify("Word Vim: open a DOCX document first", vim.log.levels.WARN)
     return
   end
 
-  local ok_builtin, builtin = pcall(require, "telescope.builtin")
+  local ok_pickers, pickers = pcall(require, "telescope.pickers")
+  local ok_finders, finders = pcall(require, "telescope.finders")
+  local ok_config, telescope_config = pcall(require, "telescope.config")
   local ok_actions, actions = pcall(require, "telescope.actions")
   local ok_state, action_state = pcall(require, "telescope.actions.state")
 
-  if not (ok_builtin and ok_actions and ok_state) then
+  if not (ok_pickers and ok_finders and ok_config and ok_actions and ok_state) then
     vim.notify(
       "Word Vim: Telescope is not available. Use :WordImage <path> instead.",
       vim.log.levels.ERROR
@@ -479,47 +578,424 @@ local function telescope_image_picker()
     return
   end
 
-  local docx = vim.b.docx_original_file or vim.api.nvim_buf_get_name(0)
-  local cwd = vim.fn.fnamemodify(docx, ":p:h")
+  local source_buf = vim.api.nvim_get_current_buf()
+  local docx = vim.b[source_buf].docx_original_file or vim.api.nvim_buf_get_name(source_buf)
+  local docx_dir = vim.fn.fnamemodify(docx, ":p:h")
 
-  builtin.find_files({
-    prompt_title = "Word Vim: Select image",
-    cwd = cwd,
-    hidden = false,
-    attach_mappings = function(prompt_bufnr, map)
-      local function choose()
-        local entry = action_state.get_selected_entry()
-        if not entry then
-          return
+  local initial = vim.trim(root_dir or "")
+  if initial == "" then
+    initial = docx_dir
+  else
+    initial = vim.fn.fnamemodify(initial, ":p")
+  end
+  initial = normalize_path(initial)
+
+  if vim.fn.isdirectory(initial) ~= 1 then
+    vim.notify("Word Vim: directory not found:\n" .. initial, vim.log.levels.ERROR)
+    return
+  end
+
+  local function open_browser(cwd)
+    cwd = normalize_path(cwd)
+
+    local picker
+    picker = pickers.new({}, {
+      prompt_title = "Word Vim images: " .. cwd,
+      finder = finders.new_table({
+        results = directory_entries(cwd),
+        entry_maker = function(item)
+          return {
+            value = item,
+            display = item.display,
+            ordinal = item.ordinal,
+            path = item.path,
+          }
+        end,
+      }),
+      sorter = telescope_config.values.generic_sorter({}),
+      previewer = false,
+      attach_mappings = function(prompt_bufnr, map)
+        local function reopen(path)
+          actions.close(prompt_bufnr)
+          vim.schedule(function()
+            open_browser(path)
+          end)
         end
 
-        local selected = entry.path or entry.filename or entry.value
-        if not selected or selected == "" then
-          return
+        local function choose()
+          local entry = action_state.get_selected_entry()
+          if not entry or not entry.value then
+            return
+          end
+
+          if entry.value.kind == "dir" then
+            reopen(entry.value.path)
+            return
+          end
+
+          local selected = entry.value.path
+          actions.close(prompt_bufnr)
+          vim.schedule(function()
+            if vim.api.nvim_buf_is_valid(source_buf) then
+              local wins = vim.fn.win_findbuf(source_buf)
+              if #wins > 0 then
+                vim.api.nvim_set_current_win(wins[1])
+              end
+            end
+            insert_image_path(selected)
+          end)
         end
 
-        if not selected:match("^%a:[/\\]") and selected:sub(1, 1) ~= "/" then
-          selected = cwd .. "/" .. selected
+        local function parent_dir()
+          local parent = normalize_path(vim.fn.fnamemodify(cwd, ":h"))
+          if parent == "" then
+            return
+          end
+          if parent == cwd then
+            return
+          end
+          reopen(parent)
         end
 
-        actions.close(prompt_bufnr)
-        vim.schedule(function()
-          insert_image_path(selected)
-        end)
+        local function drive_picker()
+          local drives = windows_drives()
+          if #drives == 0 then
+            vim.notify("Word Vim: no filesystem drives found", vim.log.levels.WARN)
+            return
+          end
+
+          actions.close(prompt_bufnr)
+          vim.schedule(function()
+            local drive_picker_obj
+            drive_picker_obj = pickers.new({}, {
+              prompt_title = "Word Vim: Select drive",
+              finder = finders.new_table({ results = drives }),
+              sorter = telescope_config.values.generic_sorter({}),
+              previewer = false,
+              attach_mappings = function(drive_prompt, drive_map)
+                local function select_drive()
+                  local selected = action_state.get_selected_entry()
+                  if not selected then
+                    return
+                  end
+                  local path = normalize_path(selected.value or selected[1] or "")
+                  actions.close(drive_prompt)
+                  vim.schedule(function()
+                    open_browser(path)
+                  end)
+                end
+                drive_map("i", "<CR>", select_drive)
+                drive_map("n", "<CR>", select_drive)
+                return true
+              end,
+            })
+            drive_picker_obj:find()
+          end)
+        end
+
+        map("i", "<CR>", choose)
+        map("n", "<CR>", choose)
+        map("i", "<BS>", parent_dir)
+        map("n", "<BS>", parent_dir)
+        map("n", "-", parent_dir)
+        map("i", "<C-d>", drive_picker)
+        map("n", "<C-d>", drive_picker)
+        return true
+      end,
+    })
+
+    picker:find()
+  end
+
+  open_browser(initial)
+end
+
+local function focus_target_buffer()
+  local buf = neo_tree_picker.target_buf
+  local win = neo_tree_picker.target_win
+
+  if win and vim.api.nvim_win_is_valid(win) then
+    vim.api.nvim_set_current_win(win)
+    return true
+  end
+
+  if buf and vim.api.nvim_buf_is_valid(buf) then
+    local wins = vim.fn.win_findbuf(buf)
+    if #wins > 0 and vim.api.nvim_win_is_valid(wins[1]) then
+      vim.api.nvim_set_current_win(wins[1])
+      return true
+    end
+  end
+
+  return false
+end
+
+local function close_neotree()
+  local ok, command = pcall(require, "neo-tree.command")
+  if ok then
+    pcall(command.execute, { action = "close", source = "filesystem" })
+  end
+end
+
+-- Neo-tree normally installs its own buffer-local <CR> mapping.  In some
+-- configurations that mapping can win over the function supplied in the
+-- plugin setup, which causes an image to be opened as a binary Neovim buffer
+-- instead of being returned to Word Vim.
+--
+-- Picker mode therefore installs a SECOND, explicit buffer-local mapping
+-- after the Neo-tree window has actually been created.  This is intentionally
+-- done at run time: it guarantees that <CR> belongs to Word Vim while the
+-- image picker is active, without changing normal Neo-tree behaviour.
+local function get_neotree_filesystem_state()
+  local ok, manager = pcall(require, "neo-tree.sources.manager")
+  if not ok or type(manager.get_state) ~= "function" then
+    return nil
+  end
+
+  local ok_state, state = pcall(manager.get_state, "filesystem")
+  if not ok_state then
+    return nil
+  end
+
+  return state
+end
+
+local function install_neotree_picker_mappings()
+  vim.schedule(function()
+    if not neo_tree_picker.active then
+      return
+    end
+
+    local state = get_neotree_filesystem_state()
+    local buf = state and state.bufnr or nil
+
+    if not buf or not vim.api.nvim_buf_is_valid(buf) then
+      local current = vim.api.nvim_get_current_buf()
+      if vim.api.nvim_buf_is_valid(current) and vim.bo[current].filetype == "neo-tree" then
+        buf = current
+      end
+    end
+
+    if not buf or not vim.api.nvim_buf_is_valid(buf) then
+      vim.notify(
+        "Word Vim: Neo-tree opened, but its picker buffer was not found",
+        vim.log.levels.ERROR
+      )
+      return
+    end
+
+    local function fresh_state()
+      return get_neotree_filesystem_state() or state
+    end
+
+    vim.keymap.set("n", "<CR>", function()
+      local current_state = fresh_state()
+
+      if M.neotree_select_node(current_state) then
+        return
       end
 
-      map("i", "<CR>", choose)
-      map("n", "<CR>", choose)
-      return true
-    end,
+      -- Picker mode may have ended while this Neo-tree buffer stayed alive.
+      -- In that case preserve normal Neo-tree Enter behaviour.
+      if current_state and current_state.commands and current_state.commands.open then
+        current_state.commands.open(current_state)
+      end
+    end, {
+      buffer = buf,
+      silent = true,
+      nowait = true,
+      desc = "Word Vim: select image / open folder",
+    })
+
+    vim.keymap.set("n", "q", function()
+      if M.neotree_picker_active() then
+        M.cancel_neotree_picker(true)
+        return
+      end
+
+      local current_state = fresh_state()
+      if current_state and current_state.commands and current_state.commands.close_window then
+        current_state.commands.close_window(current_state)
+      else
+        pcall(vim.cmd, "close")
+      end
+    end, {
+      buffer = buf,
+      silent = true,
+      nowait = true,
+      desc = "Word Vim: cancel image picker",
+    })
+
+    vim.keymap.set("n", "<Esc>", function()
+      if M.neotree_picker_active() then
+        M.cancel_neotree_picker(true)
+      end
+    end, {
+      buffer = buf,
+      silent = true,
+      nowait = true,
+      desc = "Word Vim: cancel image picker",
+    })
+  end)
+end
+
+function M.cancel_neotree_picker(close_tree)
+  if not neo_tree_picker.active then
+    return false
+  end
+
+  neo_tree_picker.active = false
+  neo_tree_picker.target_buf = nil
+  neo_tree_picker.target_win = nil
+
+  if close_tree then
+    close_neotree()
+  end
+
+  vim.notify("Word Vim: image selection cancelled", vim.log.levels.INFO)
+  return true
+end
+
+function M.neotree_picker_active()
+  return neo_tree_picker.active == true
+end
+
+-- Called by the Neo-tree <CR> mapping. Returns true when Word Vim
+-- handled the key and false when normal Neo-tree behaviour should run.
+function M.neotree_select_node(state)
+  if not neo_tree_picker.active then
+    return false
+  end
+
+  local node = state and state.tree and state.tree:get_node() or nil
+  if not node then
+    return true
+  end
+
+  local node_type = node.type
+  local path = normalize_path(node.path or (node.get_id and node:get_id()) or "")
+
+  -- Directories retain normal Neo-tree navigation while picker mode is active.
+  if node_type == "directory" or vim.fn.isdirectory(path) == 1 then
+    if state.commands and state.commands.open then
+      state.commands.open(state)
+    elseif state.commands and state.commands.toggle_node then
+      state.commands.toggle_node(state)
+    end
+    return true
+  end
+
+  if path == "" or vim.fn.filereadable(path) ~= 1 then
+    vim.notify("Word Vim: select an image file", vim.log.levels.WARN)
+    return true
+  end
+
+  if not is_supported_image(path) then
+    vim.notify(
+      "Word Vim: selected file is not a supported image:\n" .. path,
+      vim.log.levels.WARN
+    )
+    return true
+  end
+
+  local target_buf = neo_tree_picker.target_buf
+  local target_win = neo_tree_picker.target_win
+  neo_tree_picker.active = false
+  neo_tree_picker.target_buf = nil
+  neo_tree_picker.target_win = nil
+
+  close_neotree()
+
+  vim.schedule(function()
+    if target_win and vim.api.nvim_win_is_valid(target_win) then
+      vim.api.nvim_set_current_win(target_win)
+    elseif target_buf and vim.api.nvim_buf_is_valid(target_buf) then
+      local wins = vim.fn.win_findbuf(target_buf)
+      if #wins > 0 and vim.api.nvim_win_is_valid(wins[1]) then
+        vim.api.nvim_set_current_win(wins[1])
+      end
+    end
+
+    if not target_buf or not vim.api.nvim_buf_is_valid(target_buf) then
+      vim.notify("Word Vim: source DOCX buffer is no longer available", vim.log.levels.ERROR)
+      return
+    end
+
+    insert_image_path(path)
+  end)
+
+  return true
+end
+
+local function neotree_image_picker(root_dir)
+  local source_buf = vim.api.nvim_get_current_buf()
+
+  if not vim.b[source_buf].wordvim_docx then
+    vim.notify("Word Vim: open a DOCX document first", vim.log.levels.WARN)
+    return
+  end
+
+  local ok, command = pcall(require, "neo-tree.command")
+  if not ok then
+    vim.notify(
+      "Word Vim: Neo-tree is not available. Use :WordImage <path> instead.",
+      vim.log.levels.ERROR
+    )
+    return
+  end
+
+  local docx = vim.b[source_buf].docx_original_file or vim.api.nvim_buf_get_name(source_buf)
+  local docx_dir = vim.fn.fnamemodify(docx, ":p:h")
+  local initial = vim.trim(root_dir or "")
+
+  if initial == "" then
+    initial = docx_dir
+  else
+    initial = vim.fn.fnamemodify(initial, ":p")
+  end
+
+  initial = normalize_path(initial)
+
+  if vim.fn.isdirectory(initial) ~= 1 then
+    vim.notify("Word Vim: directory not found:\n" .. initial, vim.log.levels.ERROR)
+    return
+  end
+
+  neo_tree_picker.active = true
+  neo_tree_picker.target_buf = source_buf
+  neo_tree_picker.target_win = vim.api.nvim_get_current_win()
+
+  local success, err = pcall(command.execute, {
+    action = "focus",
+    source = "filesystem",
+    position = "float",
+    dir = initial,
   })
+
+  if not success then
+    neo_tree_picker.active = false
+    neo_tree_picker.target_buf = nil
+    neo_tree_picker.target_win = nil
+    vim.notify("Word Vim: could not open Neo-tree:\n" .. tostring(err), vim.log.levels.ERROR)
+    return
+  end
+
+  -- Rebind Enter only after Neo-tree has created its actual buffer.  This
+  -- prevents Neo-tree's default open action from opening PNG/JPG files as
+  -- binary text buffers during Word Vim image selection.
+  install_neotree_picker_mappings()
+
+  vim.notify(
+    "Word Vim image mode: Enter = select image / open folder, q or Esc = cancel",
+    vim.log.levels.INFO
+  )
 end
 
 function M.attach(buf)
-  vim.keymap.set("n", "<leader>ii", telescope_image_picker, {
+  vim.keymap.set("n", "<leader>ii", neotree_image_picker, {
     buffer = buf,
     silent = true,
-    desc = "Word Vim: select and insert image with Telescope",
+    desc = "Word Vim: select and insert image with Neo-tree",
   })
 end
 
@@ -536,9 +1012,13 @@ function M.setup()
 
   vim.api.nvim_create_user_command(
     "WordImagePicker",
-    telescope_image_picker,
+    function(opts)
+      neotree_image_picker(opts.args)
+    end,
     {
-      desc = "Select and insert an image with Telescope",
+      nargs = "?",
+      complete = "dir",
+      desc = "Select and insert an image with Neo-tree",
     }
   )
 

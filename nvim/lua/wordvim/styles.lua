@@ -138,6 +138,65 @@ function M.get_paragraph_style(buf, row)
   return nil
 end
 
+
+local function heading_style_from_text(line)
+  local hashes = tostring(line or ""):match("^(#+)%s+")
+  if hashes and #hashes >= 1 and #hashes <= 9 then
+    return "Heading " .. #hashes
+  end
+  return nil
+end
+
+-- Ensure that every real Word paragraph has explicit style metadata.
+-- Shift+Enter continuation rows are deliberately excluded because they are
+-- part of the previous Word paragraph, not a separate paragraph.
+--
+-- Returns true when at least one missing marker was created.
+function M.ensure_explicit_styles(buf)
+  if not vim.api.nvim_buf_is_valid(buf) then
+    return false
+  end
+
+  local changed = false
+  local count = vim.api.nvim_buf_line_count(buf)
+  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+
+  for row = 0, count - 1 do
+    local prev = row > 0 and (lines[row] or "") or ""
+    local continuation = row > 0 and prev:match("%s%s$") ~= nil
+
+    if not continuation and not M.get_paragraph_style(buf, row) then
+      local line = lines[row + 1] or ""
+      local inferred = heading_style_from_text(line) or "Normal"
+      M.set_paragraph_style(buf, row, inferred)
+      changed = true
+    elseif continuation then
+      -- A continuation row must never acquire an independent paragraph style.
+      if M.get_paragraph_style(buf, row) then
+        M.clear_paragraph_style(buf, row)
+        changed = true
+      end
+    end
+  end
+
+  return changed
+end
+
+function M.set_new_paragraph_normal(buf, row)
+  if not vim.api.nvim_buf_is_valid(buf) then
+    return false
+  end
+
+  local count = vim.api.nvim_buf_line_count(buf)
+  if count <= 0 then
+    return false
+  end
+
+  row = math.max(0, math.min(tonumber(row) or 0, count - 1))
+  M.set_paragraph_style(buf, row, "Normal")
+  return true
+end
+
 function M.get_style_map(buf)
   local s = get_state(buf)
   local result = {}

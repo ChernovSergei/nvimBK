@@ -13,6 +13,7 @@ local M = {}
 
 local indents = require("wordvim.indents")
 local styles = require("wordvim.styles")
+local lists = require("wordvim.lists")
 
 local attached = {}
 local augroups = {}
@@ -94,10 +95,63 @@ function M.attach(buf)
   -- attach this module independently.
   styles.ensure_explicit_styles(buf)
 
-  -- Enter: split the current paragraph, but the NEW Word paragraph starts as
-  -- Normal.  The original paragraph keeps its existing style extmark.
+  -- Enter behaves like Word inside lists:
+  --   * at the end of a non-empty list item -> continue the same list/level;
+  --   * on an empty list item -> leave the list and create a Normal paragraph;
+  --   * elsewhere -> create a new Normal Word paragraph.
   vim.keymap.set("i", "<CR>", function()
-    local old_row = vim.api.nvim_win_get_cursor(0)[1] - 1
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    local old_row = cursor[1] - 1
+    local col = cursor[2]
+    local line = vim.api.nvim_get_current_line()
+    local prefix, item = lists.continuation_prefix(line)
+    local at_end = col >= #line
+
+    if item and at_end then
+      if vim.trim(item.body or "") == "" then
+        -- Let Neovim create the next row first, then remove the empty list
+        -- paragraph. The newly-created row shifts into its place and becomes
+        -- a genuine Normal paragraph, matching Word's double-Enter behavior.
+        vim.schedule(function()
+          if not vim.api.nvim_buf_is_valid(buf) then
+            return
+          end
+
+          local count = vim.api.nvim_buf_line_count(buf)
+          if old_row < count then
+            vim.api.nvim_buf_set_lines(buf, old_row, old_row + 1, false, {})
+          end
+
+          local target = math.min(old_row, vim.api.nvim_buf_line_count(buf) - 1)
+          if target >= 0 then
+            styles.set_paragraph_style(buf, target, "Normal")
+            notify_style_changed(buf, target, "Normal")
+            pcall(vim.api.nvim_win_set_cursor, 0, { target + 1, 0 })
+          end
+
+          lists.renumber_buffer(buf)
+        end)
+
+        return "<CR>"
+      end
+
+      vim.schedule(function()
+        if not vim.api.nvim_buf_is_valid(buf) then
+          return
+        end
+
+        local new_row = math.min(old_row + 1, vim.api.nvim_buf_line_count(buf) - 1)
+        vim.api.nvim_buf_set_lines(buf, new_row, new_row + 1, false, { prefix or "" })
+        styles.set_paragraph_style(buf, new_row, "List Paragraph")
+        notify_style_changed(buf, new_row, "List Paragraph")
+        lists.renumber_buffer(buf)
+
+        local current = vim.api.nvim_buf_get_lines(buf, new_row, new_row + 1, false)[1] or ""
+        pcall(vim.api.nvim_win_set_cursor, 0, { new_row + 1, #current })
+      end)
+
+      return "<CR>"
+    end
 
     vim.schedule(function()
       if vim.api.nvim_buf_is_valid(buf) then
@@ -112,7 +166,7 @@ function M.attach(buf)
     expr = true,
     noremap = true,
     silent = true,
-    desc = "Word Vim: new Normal Word paragraph",
+    desc = "Word Vim: Word-like Enter / continue list",
   })
 
   -- Normal-mode o: native Vim open-below, then explicitly mark the new row as
@@ -122,7 +176,7 @@ function M.attach(buf)
     vim.schedule(function()
       if vim.api.nvim_buf_is_valid(buf) then
         local new_row = math.min(old_row + 1, vim.api.nvim_buf_line_count(buf) - 1)
-        set_new_normal(buf, new_row, old_row)
+        set_new_normal(buf, new_row, nil)
       end
     end)
     return "o"
@@ -140,7 +194,7 @@ function M.attach(buf)
     local old_row = vim.api.nvim_win_get_cursor(0)[1] - 1
     vim.schedule(function()
       if vim.api.nvim_buf_is_valid(buf) then
-        set_new_normal(buf, old_row, math.min(old_row + 1, vim.api.nvim_buf_line_count(buf) - 1))
+        set_new_normal(buf, old_row, nil)
       end
     end)
     return "O"

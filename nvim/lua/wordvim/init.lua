@@ -17,6 +17,9 @@ local pagebreaks = require("wordvim.pagebreaks")
 local pagesettings = require("wordvim.pagesettings")
 local toc = require("wordvim.toc")
 local crossrefs = require("wordvim.crossrefs")
+local language = require("wordvim.language")
+local cursor = require("wordvim.cursor")
+local help = require("wordvim.help")
 
 function M.setup()
   docx.setup()
@@ -32,6 +35,9 @@ function M.setup()
   pagesettings.setup()
   toc.setup()
   crossrefs.setup()
+  language.setup()
+  cursor.setup()
+  help.setup()
 end
 
 return M

@@ -31,6 +31,14 @@ local state = {}
 local MARKER_PREFIX =
   "WORDVIM_PAGEBREAK_"
 
+-- Written only into the disposable DOCX copy that Pandoc reads.  A real
+-- break-only Word paragraph is otherwise discarded by Pandoc, forcing the
+-- importer to guess its location from neighbouring text.  Keeping an exact
+-- positional marker also works before empty paragraphs, tables and repeated
+-- headings.
+local READ_MARKER_PREFIX =
+  "WORDVIM_READ_PAGEBREAK_7D4E91C2_"
+
 local function get_state(buf)
   if not state[buf] then
     state[buf] = {
@@ -223,7 +231,10 @@ function M.set_before(buf, row, enabled, mark_modified)
         row,
         0,
         {
-          right_gravity = false,
+          -- A manual page break belongs to the paragraph that follows it.
+          -- If a new row is inserted immediately before that paragraph (O,
+          -- paste, etc.), keep the break attached to the original paragraph.
+          right_gravity = true,
         }
       )
 
@@ -647,6 +658,60 @@ function M.marker_for_row(row)
     .. tostring(row + 1)
 end
 
+function M.read_marker_prefix()
+  return READ_MARKER_PREFIX
+end
+
+local function restore_read_markers(buf)
+  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  local marker_rows = {}
+
+  for row, line in ipairs(lines) do
+    if vim.trim(line or ""):match(
+      "^" .. READ_MARKER_PREFIX .. "%d+$"
+    ) then
+      marker_rows[#marker_rows + 1] = row - 1
+    end
+  end
+
+  if #marker_rows == 0 then
+    return false
+  end
+
+  -- Delete bottom-up so each stored source row stays valid.  Neovim moves
+  -- paragraph/table/style extmarks together with the remaining lines.
+  for i = #marker_rows, 1, -1 do
+    vim.api.nvim_buf_set_lines(
+      buf,
+      marker_rows[i],
+      marker_rows[i] + 1,
+      false,
+      {}
+    )
+  end
+
+  local line_count = vim.api.nvim_buf_line_count(buf)
+  local already_removed = 0
+
+  for _, source_row in ipairs(marker_rows) do
+    local target_row = source_row - already_removed
+    target_row = math.max(0, math.min(target_row, line_count - 1))
+
+    local id = vim.api.nvim_buf_set_extmark(
+      buf,
+      manual_ns,
+      target_row,
+      0,
+      { right_gravity = true }
+    )
+
+    get_state(buf).manual_marks[id] = true
+    already_removed = already_removed + 1
+  end
+
+  return true
+end
+
 function M.load_from_docx(buf, docx)
   state[buf] = {
     manual_marks = {},
@@ -668,6 +733,14 @@ function M.load_from_docx(buf, docx)
     0,
     -1
   )
+
+  -- v6.58 read copies carry exact break positions through Pandoc.  Prefer
+  -- those markers over the older text-matching fallback below.
+  if restore_read_markers(buf) then
+    M.recalculate(buf)
+    vim.bo[buf].modified = false
+    return
+  end
 
   local temp =
     vim.fn.tempname() .. ".docx"
@@ -809,7 +882,9 @@ finally {
               i - 1,
               0,
               {
-                right_gravity = false,
+                -- Restored page-break metadata follows the paragraph it
+                -- precedes when rows are inserted at this boundary.
+                right_gravity = true,
               }
             )
 
@@ -836,15 +911,33 @@ $path = '%s'
 $prefix = '%s'
 $nsUri = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 
+function Find-DocEntry($zip) {
+    $entry = $zip.GetEntry('word/document.xml')
+    if ($null -ne $entry) { return $entry }
+
+    # Be tolerant of malformed/legacy OPC packages that contain Windows
+    # backslashes in ZIP entry names.  Normalize only for comparison; the
+    # update phase below rewrites document.xml using the canonical '/' name.
+    foreach ($candidate in @($zip.Entries)) {
+        $normalized = ([string]$candidate.FullName) -replace '\\', '/'
+        if ($normalized.TrimStart('/') -ieq 'word/document.xml') {
+            return $candidate
+        }
+    }
+
+    return $null
+}
+
 $zipRead = $null
 $reader = $null
 
 try {
     $zipRead = [System.IO.Compression.ZipFile]::OpenRead($path)
-    $entry = $zipRead.GetEntry('word/document.xml')
+    $entry = Find-DocEntry $zipRead
 
     if ($null -eq $entry) {
-        throw 'word/document.xml not found'
+        $names = (@($zipRead.Entries) | ForEach-Object { $_.FullName }) -join ', '
+        throw ('word/document.xml not found. ZIP entries: ' + $names)
     }
 
     $reader = New-Object System.IO.StreamReader(
@@ -919,9 +1012,13 @@ try {
         $false
     )
 
-    $oldEntry = $zipUpdate.GetEntry('word/document.xml')
+    $oldEntry = Find-DocEntry $zipUpdate
+    if ($null -eq $oldEntry) {
+        throw 'word/document.xml not found during page-break ZIP update'
+    }
     $oldEntry.Delete()
 
+    # Always recreate with the canonical OPC path separator.
     $newEntry = $zipUpdate.CreateEntry(
         'word/document.xml',
         [System.IO.Compression.CompressionLevel]::Optimal
@@ -954,7 +1051,10 @@ $checkReader = $null
 
 try {
     $zipCheck = [System.IO.Compression.ZipFile]::OpenRead($path)
-    $entry = $zipCheck.GetEntry('word/document.xml')
+    $entry = Find-DocEntry $zipCheck
+    if ($null -eq $entry) {
+        throw 'word/document.xml not found after page-break update'
+    }
 
     $checkReader = New-Object System.IO.StreamReader($entry.Open())
     [xml]$checkXml = $checkReader.ReadToEnd()

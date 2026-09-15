@@ -172,21 +172,52 @@ local function caption_number(buf, id)
   return nil
 end
 
-local function caption_title_from_line(line, kind)
+local function caption_prefix_end(line, kind)
   line = tostring(line or "")
   local label = kind_label(kind)
+  local _, finish = line:find("^%s*" .. label .. "%s+%d+")
+  return finish
+end
 
-  local title = line:match("^%s*" .. label .. "%s+%d+%s+—%s*(.*)$")
-  if title then
-    return vim.trim(title)
+local function strip_caption_separator(text)
+  text = vim.trim(tostring(text or ""))
+
+  -- Pandoc can serialise an em dash from DOCX as Markdown "---".  Older
+  -- Word Vim round-trips could then escape those hyphens, producing strings
+  -- such as "--- \-- test".  Treat every leading dash/backslash sequence as
+  -- presentation punctuation, not as part of the caption title.
+  while text ~= "" do
+    text = text:gsub("^%s+", "")
+
+    if text:sub(1, #"—") == "—" then
+      text = text:sub(#"—" + 1)
+    elseif text:sub(1, #"–") == "–" then
+      text = text:sub(#"–" + 1)
+    elseif text:sub(1, 1) == "-" or text:sub(1, 1) == "\\" or text:sub(1, 1) == ":" then
+      text = text:sub(2)
+    else
+      break
+    end
   end
 
-  title = line:match("^%s*" .. label .. "%s+%d+%s*[:%-]%s*(.*)$")
-  if title then
-    return vim.trim(title)
+  return vim.trim(text)
+end
+
+local function caption_title_from_line(line, kind)
+  line = tostring(line or "")
+  local finish = caption_prefix_end(line, kind)
+
+  if finish then
+    return strip_caption_separator(line:sub(finish + 1))
   end
 
+  -- Fresh captions are initially inserted as title-only text and receive the
+  -- generated "Figure N —" prefix on the first refresh.
   return vim.trim(line)
+end
+
+local function is_caption_line(line, kind)
+  return caption_prefix_end(line, kind) ~= nil
 end
 
 local function caption_info_by_bookmark(buf, bookmark)
@@ -220,7 +251,7 @@ local function caption_info_by_bookmark(buf, bookmark)
   return nil
 end
 
-local function set_caption_mark(buf, row, kind, bookmark)
+local function set_caption_mark(buf, row, kind, bookmark, last_text, validated)
   local s = get_state(buf)
   -- Keep caption metadata attached to the original caption paragraph when a
   -- new paragraph is inserted exactly before it (for example with O).
@@ -233,12 +264,19 @@ local function set_caption_mark(buf, row, kind, bookmark)
   s.captions[id] = {
     kind = kind,
     bookmark = bookmark or safe_uid(kind),
+    -- Once a caption has been normalised, the extmark is allowed to survive
+    -- only while it still points at a real "Figure N..." / "Table N..."
+    -- paragraph.  If the user deletes that paragraph, Neovim may move the
+    -- zero-width extmark to a neighbouring row.  Without this guard refresh()
+    -- would turn that neighbour back into the deleted caption.
+    validated = validated == true,
+    last_text = last_text,
   }
 
   return id
 end
 
-local function set_ref_mark(buf, row, start_col, end_col, kind, bookmark)
+local function set_ref_mark(buf, row, start_col, end_col, kind, bookmark, visible_text)
   local s = get_state(buf)
   local id = vim.api.nvim_buf_set_extmark(buf, ns, row, start_col, {
     end_row = row,
@@ -252,6 +290,10 @@ local function set_ref_mark(buf, row, start_col, end_col, kind, bookmark)
   s.refs[id] = {
     kind = kind,
     bookmark = bookmark,
+    -- Snapshot of the text owned by this REF extmark.  If the user later
+    -- deletes or edits that text, refresh() must remove the metadata instead
+    -- of recreating the cross-reference somewhere else.
+    last_text = visible_text,
   }
 
   return id
@@ -293,40 +335,55 @@ function M.refresh(buf)
 
   local ok, err = pcall(function()
     -- Normalize caption numbering and visible caption text.
+    --
+    -- Caption metadata is a zero-width extmark.  When the caption paragraph is
+    -- deleted with normal Vim editing, Neovim can legally move that extmark to
+    -- a neighbouring paragraph.  A refresh must never recreate a caption on
+    -- that neighbour.  Validated marks therefore have to remain on a line that
+    -- still looks like a caption of the same kind.
     for _, kind in ipairs({ "figure", "table" }) do
       local n = 0
-      for _, item in ipairs(sorted_caption_items(buf, kind)) do
-        n = n + 1
-        local line = vim.api.nvim_buf_get_lines(buf, item.row, item.row + 1, false)[1] or ""
-        local title = caption_title_from_line(line, kind)
-        local wanted = kind_label(kind) .. " " .. tostring(n)
-        if title ~= "" then
-          wanted = wanted .. EM_DASH .. title
-        end
+      local seen_rows = {}
 
-        if line ~= wanted then
-          -- A caption extmark uses right_gravity=true so that inserting a new
-          -- paragraph exactly before the caption (O / Shift+O) keeps the mark
-          -- attached to the original caption paragraph.  Replacing the whole
-          -- caption line while that mark is still present, however, is also an
-          -- insertion at the mark boundary.  Neovim can therefore move the
-          -- mark to the following row.  The next refresh then treats that row
-          -- as the caption and rewrites it too, producing a cascade of
-          -- duplicate "Figure N" lines.
-          --
-          -- Remove the mark while normalising its own visible text and recreate
-          -- it on the same row afterwards.  This preserves right-gravity for
-          -- user edits without allowing refresh() to move its own metadata.
-          local meta = s.captions[item.id]
-          if meta then
-            local kind_meta = meta.kind
-            local bookmark_meta = meta.bookmark
+      for _, item in ipairs(sorted_caption_items(buf, kind)) do
+        local meta = s.captions[item.id]
+        local line = vim.api.nvim_buf_get_lines(buf, item.row, item.row + 1, false)[1] or ""
+
+        -- Two marks can converge on the same row after line deletion.  Keep
+        -- only the first one; otherwise one physical paragraph can be counted
+        -- and rewritten twice.
+        if seen_rows[item.row] then
+          pcall(vim.api.nvim_buf_del_extmark, buf, ns, item.id)
+          s.captions[item.id] = nil
+        elseif meta and meta.validated and not is_caption_line(line, kind) then
+          -- The caption paragraph itself was deleted.  Drop semantic metadata
+          -- instead of resurrecting the caption on whatever row inherited the
+          -- extmark.
+          pcall(vim.api.nvim_buf_del_extmark, buf, ns, item.id)
+          s.captions[item.id] = nil
+        else
+          seen_rows[item.row] = true
+          n = n + 1
+
+          local title = caption_title_from_line(line, kind)
+          local wanted = kind_label(kind) .. " " .. tostring(n)
+          if title ~= "" then
+            wanted = wanted .. EM_DASH .. title
+          end
+
+          if line ~= wanted then
+            -- Remove the mark while normalising its own visible text and
+            -- recreate it on the same row.  This preserves right-gravity for
+            -- user edits without allowing refresh() to move its own metadata.
+            local kind_meta = meta and meta.kind or kind
+            local bookmark_meta = meta and meta.bookmark or nil
             pcall(vim.api.nvim_buf_del_extmark, buf, ns, item.id)
             s.captions[item.id] = nil
             vim.api.nvim_buf_set_lines(buf, item.row, item.row + 1, false, { wanted })
-            set_caption_mark(buf, item.row, kind_meta, bookmark_meta)
-          else
-            vim.api.nvim_buf_set_lines(buf, item.row, item.row + 1, false, { wanted })
+            set_caption_mark(buf, item.row, kind_meta, bookmark_meta, wanted, true)
+          elseif meta then
+            meta.validated = true
+            meta.last_text = line
           end
         end
       end
@@ -392,8 +449,22 @@ function M.refresh(buf)
               {}
             )
             local existing_text = table.concat(existing, "\n")
+            local meta = s.refs[item.id]
+            local last_text = meta and meta.last_text or nil
 
-            if existing_text ~= wanted then
+            -- If the bytes currently covered by the extmark are no longer the
+            -- text Word Vim last wrote for this reference, the user edited or
+            -- deleted the REF.  Do NOT resurrect it.  This is especially
+            -- important after deleting an entire REF line and then inserting
+            -- paragraphs elsewhere: Neovim can move a surviving extmark to a
+            -- neighbouring row, and the old implementation would write the
+            -- reference back there on the next refresh.
+            if last_text ~= nil and existing_text ~= last_text then
+              pcall(vim.api.nvim_buf_del_extmark, buf, ns, item.id)
+              s.refs[item.id] = nil
+            elseif existing_text ~= wanted then
+              -- The reference itself is untouched, but its generated display
+              -- changed because caption numbering/page estimation changed.
               vim.api.nvim_buf_set_text(
                 buf,
                 pos.row,
@@ -411,8 +482,11 @@ function M.refresh(buf)
                 pos.col,
                 pos.col + #wanted,
                 item.kind,
-                item.bookmark
+                item.bookmark,
+                wanted
               )
+            elseif meta then
+              meta.last_text = existing_text
             end
           end
         end
@@ -494,23 +568,17 @@ local function insert_caption(kind)
 
     vim.api.nvim_buf_set_lines(buf, insert_row, insert_row, false, { input })
 
-    -- A Word caption is not only cross-reference metadata; it is also a
-    -- paragraph with the Word paragraph style "caption".  Keep the style
-    -- metadata in sync at creation time so the Style UI immediately shows
-    -- Caption instead of Normal.
+    -- Create semantic caption metadata first. refresh() normalises the visible
+    -- "Figure N — title" text by replacing the whole line.  Paragraph-style
+    -- extmarks use right_gravity=true, so assigning Caption *before* that
+    -- replacement makes the style marker jump to the following paragraph and
+    -- leaves two visible Caption-style rows in the Style UI.
+    --
+    -- Therefore apply the Word Caption paragraph style only AFTER refresh().
     local ok_styles, styles = pcall(require, "wordvim.styles")
-    if ok_styles and styles and styles.set_paragraph_style then
-      styles.set_paragraph_style(buf, insert_row, "caption")
-    end
-
-    set_caption_mark(buf, insert_row, kind, nil)
+    set_caption_mark(buf, insert_row, kind, nil, input, false)
     M.refresh(buf)
 
-    -- refresh() may replace the whole caption line while normalising its
-    -- visible number. Paragraph-style extmarks also use right_gravity=true,
-    -- so that replacement can move the style mark to the following row.
-    -- Re-assert Caption after refresh so the caption paragraph itself always
-    -- owns the Word Caption style.
     if ok_styles and styles and styles.set_paragraph_style then
       styles.set_paragraph_style(buf, insert_row, "caption")
     end
@@ -554,7 +622,7 @@ local function insert_reference(buf, info)
   local text = display_ref(info)
 
   vim.api.nvim_buf_set_text(buf, row, col, row, col, { text })
-  set_ref_mark(buf, row, col, col + #text, info.kind, info.bookmark)
+  set_ref_mark(buf, row, col, col + #text, info.kind, info.bookmark, text)
   vim.api.nvim_win_set_cursor(target_win, { row + 1, col + #text })
 end
 
@@ -868,17 +936,9 @@ function M.restore_from_docx(buf, docx)
     if found ~= nil then
       used_rows[found] = true
 
-      -- Pandoc can flatten/reconstruct a figure caption in a way that leaves
-      -- the visible paragraph as Normal in the editor even though the DOCX
-      -- caption metadata (SEQ/bookmark) was restored successfully.  Once we
-      -- have authoritatively matched a DOCX caption, restore its Word
-      -- paragraph style as well.
-      local ok_styles, styles = pcall(require, "wordvim.styles")
-      if ok_styles and styles and styles.set_paragraph_style then
-        styles.set_paragraph_style(buf, found, "caption")
-      end
-
-      set_caption_mark(buf, found, cap.kind, cap.bookmark)
+      -- Restore semantic caption metadata now.  The paragraph style is applied
+      -- after refresh(), because refresh may replace the entire caption line.
+      set_caption_mark(buf, found, cap.kind, cap.bookmark, lines[found + 1], is_caption_line(lines[found + 1] or "", cap.kind))
     end
   end
 
@@ -901,7 +961,8 @@ function M.restore_from_docx(buf, docx)
 
         local ref = refs_by_kind[kind][ref_index[kind]]
         if ref then
-          set_ref_mark(buf, zero, a - 1, b, kind, ref.bookmark)
+          local visible = line:sub(a, b)
+          set_ref_mark(buf, zero, a - 1, b, kind, ref.bookmark, visible)
           ref_index[kind] = ref_index[kind] + 1
         end
         search_from = b + 1

@@ -68,6 +68,22 @@ local image_extensions = {
   svg = true,
 }
 
+-- System.Drawing can rotate these raster formats reliably on the Windows
+-- versions Word Vim targets. WEBP and SVG can still be inserted into DOCX,
+-- but rotation is blocked with a clear message instead of handing them to
+-- System.Drawing and failing unpredictably.
+local rotatable_extensions = {
+  png = true,
+  jpg = true,
+  jpeg = true,
+  gif = true,
+  bmp = true,
+  tif = true,
+  tiff = true,
+}
+
+local PERCENT_META_PREFIX = "WORDVIM_WIDTH_PERCENT="
+
 local function is_supported_image(path)
   local ext = vim.fn.fnamemodify(path or "", ":e"):lower()
   return image_extensions[ext] == true
@@ -318,6 +334,17 @@ local function rotate_image(angle)
   end
 
   source = normalize_path(source)
+
+  local source_ext = vim.fn.fnamemodify(source, ":e"):lower()
+  if not rotatable_extensions[source_ext] then
+    vim.notify(
+      "Word Vim: rotation is supported for PNG, JPG/JPEG, GIF, BMP, and TIFF.\n"
+        .. "This image can remain in the document, but its format cannot be rotated safely: ."
+        .. (source_ext ~= "" and source_ext or "unknown"),
+      vim.log.levels.WARN
+    )
+    return
+  end
 
   if vim.fn.filereadable(source) ~= 1 then
     vim.notify(
@@ -989,6 +1016,212 @@ local function neotree_image_picker(root_dir)
     "Word Vim image mode: Enter = select image / open folder, q or Esc = cancel",
     vim.log.levels.INFO
   )
+end
+
+-- ============================================================
+-- Preserve percentage image widths across DOCX round-trips
+-- ============================================================
+-- Word stores image extents as absolute EMUs, so Pandoc reopens width=50%
+-- as a physical width in inches.  Word Vim stores only the original percentage
+-- in wp:docPr/@name next to each image. The picture name is ignored by Pandoc,
+-- so the marker never leaks into Markdown alt text. Existing picture names are
+-- preserved; the marker is appended and stripped/replaced idempotently.
+--
+-- The mapping is occurrence-based in document order.  Pandoc preserves that
+-- order for body images, which lets us restore the editor representation before
+-- any later structural cleanup occurs.
+local function collect_editor_image_widths(buf)
+  local result = {}
+  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+
+  for _, line in ipairs(lines) do
+    if tostring(line or ""):match("!%[") then
+      local width = tostring(line or ""):match('width%s*=%s*"?([^%s}"]+)')
+      if width and width:match("^[%d%.]+%%$") then
+        table.insert(result, width)
+      else
+        table.insert(result, "")
+      end
+    end
+  end
+
+  return result
+end
+
+function M.apply_to_docx(docx, buf)
+  local widths = collect_editor_image_widths(buf)
+  local has_percent = false
+  for _, width in ipairs(widths) do
+    if width ~= "" then
+      has_percent = true
+      break
+    end
+  end
+
+  -- No percentage widths means there is no Word Vim image metadata to add.
+  if #widths == 0 or not has_percent then
+    return true
+  end
+
+  local spec_path = vim.fn.tempname() .. ".txt"
+  vim.fn.writefile(widths, spec_path)
+
+  local script = string.format([=[
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+$path = '%s'
+$specPath = '%s'
+$prefix = '%s'
+$widths = @(Get-Content -LiteralPath $specPath)
+
+$archive = [System.IO.Compression.ZipFile]::Open($path, [System.IO.Compression.ZipArchiveMode]::Update)
+try {
+    $entry = $archive.GetEntry('word/document.xml')
+    if ($null -eq $entry) { throw 'word/document.xml not found' }
+
+    $reader = New-Object System.IO.StreamReader($entry.Open())
+    try { $text = $reader.ReadToEnd() } finally { $reader.Dispose() }
+
+    $xml = New-Object System.Xml.XmlDocument
+    $xml.PreserveWhitespace = $true
+    $xml.LoadXml($text)
+
+    $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
+    $ns.AddNamespace('wp', 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing')
+    $nodes = @($xml.SelectNodes('//wp:docPr', $ns))
+
+    for ($i = 0; $i -lt $nodes.Count; $i++) {
+        $node = $nodes[$i]
+        $name = [string]$node.GetAttribute('name')
+        $name = [regex]::Replace($name, '\s*\[WORDVIM_WIDTH_PERCENT=[^\]]+\]', '')
+        $name = $name.TrimEnd()
+
+        if ($i -lt $widths.Count) {
+            $width = [string]$widths[$i]
+            if (-not [string]::IsNullOrWhiteSpace($width)) {
+                if ($name.Length -gt 0) { $name += ' ' }
+                $name += '[' + $prefix + $width + ']'
+            }
+        }
+
+        if ($name.Length -gt 0) {
+            $node.SetAttribute('name', $name)
+        } else {
+            $node.RemoveAttribute('name')
+        }
+    }
+
+    $entry.Delete()
+    $newEntry = $archive.CreateEntry('word/document.xml')
+    $writer = New-Object System.IO.StreamWriter($newEntry.Open(), (New-Object System.Text.UTF8Encoding($false)))
+    try {
+        $xml.Save($writer)
+    } finally {
+        $writer.Dispose()
+    }
+}
+finally {
+    $archive.Dispose()
+}
+]=], ps_escape(docx), ps_escape(spec_path), PERCENT_META_PREFIX)
+
+  local ok, output = run_powershell(script)
+  vim.fn.delete(spec_path)
+
+  if not ok then
+    vim.notify(
+      "Word Vim: could not preserve percentage image widths:\n" .. tostring(output),
+      vim.log.levels.ERROR
+    )
+    return false
+  end
+
+  return true
+end
+
+local function inspect_percent_widths(docx)
+  local script = string.format([=[
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+$path = '%s'
+$archive = [System.IO.Compression.ZipFile]::OpenRead($path)
+try {
+    $entry = $archive.GetEntry('word/document.xml')
+    if ($null -eq $entry) { exit 0 }
+
+    $reader = New-Object System.IO.StreamReader($entry.Open())
+    try { $text = $reader.ReadToEnd() } finally { $reader.Dispose() }
+
+    $xml = New-Object System.Xml.XmlDocument
+    $xml.LoadXml($text)
+    $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
+    $ns.AddNamespace('wp', 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing')
+
+    foreach ($node in @($xml.SelectNodes('//wp:docPr', $ns))) {
+        $name = [string]$node.GetAttribute('name')
+        $m = [regex]::Match($name, '\[WORDVIM_WIDTH_PERCENT=([^\]]+)\]')
+        if ($m.Success) {
+            [Console]::WriteLine($m.Groups[1].Value)
+        } else {
+            [Console]::WriteLine('-')
+        }
+    }
+}
+finally {
+    $archive.Dispose()
+}
+]=], ps_escape(docx))
+
+  local ok, output = run_powershell(script)
+  if not ok then
+    return {}
+  end
+
+  local result = {}
+  output = tostring(output or ""):gsub("\r", "")
+  for line in (output .. "\n"):gmatch("(.-)\n") do
+    if line ~= "" then
+      table.insert(result, line == "-" and "" or vim.trim(line))
+    end
+  end
+  return result
+end
+
+function M.restore_percent_widths(lines, docx)
+  local widths = inspect_percent_widths(docx)
+  if #widths == 0 then
+    return lines
+  end
+
+  local result = vim.deepcopy(lines)
+  local image_index = 0
+
+  for i, raw in ipairs(result) do
+    local line = tostring(raw or "")
+    if line:match("!%[") then
+      image_index = image_index + 1
+      local width = widths[image_index]
+      if width and width:match("^[%d%.]+%%$") then
+        if line:match("{[^}]*}") then
+          if line:match("width%s*=") then
+            line = line:gsub('width%s*=%s*"?[^%s}"]+"?', "width=" .. width, 1)
+          else
+            line = line:gsub("{([^}]*)}", function(attrs)
+              attrs = vim.trim(attrs)
+              return "{" .. (attrs ~= "" and (attrs .. " ") or "") .. "width=" .. width .. "}"
+            end, 1)
+          end
+        else
+          line = line .. "{width=" .. width .. "}"
+        end
+      end
+      result[i] = line
+    end
+  end
+
+  return result
 end
 
 function M.attach(buf)

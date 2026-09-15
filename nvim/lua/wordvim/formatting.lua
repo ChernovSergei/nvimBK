@@ -79,10 +79,17 @@ local function set_heading(level)
   line = line:gsub("^#+%s*", "")
   vim.fn.setline(".", string.rep("#", level) .. " " .. line)
 
-  -- Heading styles are represented natively by Markdown.
+  -- Keep explicit paragraph-style metadata in sync with the visible Markdown
+  -- heading marker.  The save pipeline still emits native Markdown headings,
+  -- but the hidden style mark is needed by the gutter/style UI and survives
+  -- o/O/Enter/extmark operations reliably.
   local ok, styles = pcall(require, "wordvim.styles")
   if ok then
-    styles.clear_paragraph_style(buffer, vim.api.nvim_win_get_cursor(0)[1] - 1)
+    styles.set_paragraph_style(
+      buffer,
+      vim.api.nvim_win_get_cursor(0)[1] - 1,
+      "Heading " .. level
+    )
   end
 end
 
@@ -115,8 +122,11 @@ function M.attach(buf)
     wrap_visual("*", "*")
   end, { buffer = buf, desc = "Word Vim: Italic", silent = true })
 
+  -- Underline uses a compact editor-side marker so it is as easy to
+  -- recognize as **bold**, *italic* and ~~strikeout~~.  The DOCX save/open
+  -- pipeline converts ++text++ <-> Word custom-style="Underline".
   vim.keymap.set("x", "<leader>u", function()
-    wrap_visual("[", ']{custom-style="Underline"}')
+    wrap_visual("++", "++")
   end, { buffer = buf, desc = "Word Vim: Underline", silent = true })
 
   vim.keymap.set("x", "<leader>s", function()
@@ -143,6 +153,15 @@ function M.attach(buf)
   end, {
     buffer = buf,
     desc = "Word Vim: Numbered list",
+    silent = true,
+    nowait = true,
+  })
+
+  vim.keymap.set("n", "<leader>lx", function()
+    require("wordvim.lists").exit_current()
+  end, {
+    buffer = buf,
+    desc = "Word Vim: exit/cancel current list item",
     silent = true,
     nowait = true,
   })

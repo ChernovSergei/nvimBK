@@ -20,9 +20,12 @@ local pagebreaks = require("wordvim.pagebreaks")
 local pagesettings = require("wordvim.pagesettings")
 local toc = require("wordvim.toc")
 local crossrefs = require("wordvim.crossrefs")
+local language = require("wordvim.language")
 local formatting = require("wordvim.formatting")
 local images = require("wordvim.images")
 local styleui = require("wordvim.styleui")
+local help = require("wordvim.help")
+local tables = require("wordvim.tables")
 
 local group = vim.api.nvim_create_augroup("WordVimDocx", { clear = true })
 local window_restore = {}
@@ -33,6 +36,14 @@ local markdown_format =
   .. "+fenced_divs"
   .. "+strikeout"
   .. "+pipe_tables"
+  -- Word Vim edits tables as compact pipe-table rows. Pandoc's default
+  -- Markdown writer prefers grid/simple tables when reading DOCX, which
+  -- makes a table expand into many ordinary editor lines on reopen.
+  -- Disable the alternative table syntaxes so DOCX -> Markdown remains
+  -- stable as a pipe table across save/open cycles.
+  .. "-grid_tables"
+  .. "-simple_tables"
+  .. "-multiline_tables"
   .. "+raw_html"
 
 -- A temporary text token used only while converting DOCX <-> Markdown.
@@ -40,6 +51,9 @@ local markdown_format =
 -- distinguish it from Markdown separator blank lines.  The token is never
 -- left in the user's DOCX: it is removed from document.xml before save.
 local EMPTY_PARAGRAPH_MARKER = "WORDVIM_EMPTY_PARAGRAPH_7D4E91C2"
+local INLINE_TAB_MARKER = "WORDVIM_INLINE_TAB_5F83A1D4"
+local HEADING_MARKER_PREFIX = "WORDVIM_HEADING_7D4E91C2_L"
+
 
 local function ps_escape(value)
   return tostring(value or ""):gsub("'", "''")
@@ -86,6 +100,8 @@ local function make_pandoc_read_copy_with_empty_markers(docx)
 
   local path = ps_escape(temp_docx)
   local marker = ps_escape(EMPTY_PARAGRAPH_MARKER)
+  local tab_marker = ps_escape(INLINE_TAB_MARKER)
+  local page_break_marker = ps_escape(pagebreaks.read_marker_prefix())
 
   local script = string.format([[
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -93,6 +109,8 @@ Add-Type -AssemblyName System.IO.Compression
 
 $path = '%s'
 $marker = '%s'
+$tabMarker = '%s'
+$pageBreakMarker = '%s'
 $zip = $null
 
 try {
@@ -109,6 +127,82 @@ try {
     $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
     $ns.AddNamespace('w', $nsUri)
 
+    # Rehydrate metadata only in the disposable Pandoc input copy.  The saved
+    # DOCX keeps it in a standard custom property, never in visible body text.
+    $customEntry=$zip.GetEntry('docProps/custom.xml')
+    if($customEntry){
+        $mr=New-Object IO.StreamReader($customEntry.Open())
+        $models=New-Object Xml.XmlDocument
+        $models.LoadXml($mr.ReadToEnd());$mr.Close()
+        $customNs=New-Object Xml.XmlNamespaceManager($models.NameTable)
+        $customNs.AddNamespace('cp','http://schemas.openxmlformats.org/officeDocument/2006/custom-properties')
+        $customNs.AddNamespace('vt','http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes')
+        $stored=$models.SelectSingleNode('/cp:Properties/cp:property[@name="WordVimTables"]/vt:lpwstr',$customNs)
+        if($stored){
+          $json=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($stored.InnerText))
+          $records=@($json|ConvertFrom-Json)
+          $tables=@($xml.SelectNodes('//w:tbl',$ns))
+          foreach($record in $records){
+            $index=[int]$record.index
+            # Metadata may outlive a table deleted or reordered by another
+            # editor.  Never make the whole DOCX unreadable for a stale index.
+            # If there is exactly one model and one table, their pairing is
+            # unambiguous even when an older version stored a wrong index.
+            if($index -lt 0 -or $index -ge $tables.Count){
+              if($records.Count -eq 1 -and $tables.Count -eq 1){$index=0}else{continue}
+            }
+            $hex=[string]$record.hex
+            if($hex -notmatch '^[0-9A-Fa-f]+$'){continue}
+            $p=$xml.CreateElement('w','p',$nsUri)
+            $r=$xml.CreateElement('w','r',$nsUri)
+            $t=$xml.CreateElement('w','t',$nsUri)
+            $t.InnerText='WORDVIM_TABLE_META_'+$hex
+            [void]$r.AppendChild($t);[void]$p.AppendChild($r)
+            [void]$tables[$index].ParentNode.InsertBefore($p,$tables[$index])
+          }
+        }
+    }
+
+    $paragraphs = @($xml.SelectNodes('//w:body//w:p', $ns))
+    $pageBreakIndex = 0
+
+    # Preserve the exact position of every real manual page break in the
+    # disposable read copy. Pandoc normally drops a paragraph that contains
+    # only <w:br w:type="page"/>. The marker is removed from the Neovim buffer
+    # after all row-rewriting import passes and never touches the original.
+    foreach ($p in $paragraphs) {
+        $pageBreaks = @($p.SelectNodes('.//w:br[@w:type="page"]', $ns))
+        if ($pageBreaks.Count -eq 0) { continue }
+
+        $pageBreakIndex++
+        $markerText = $pageBreakMarker + [string]$pageBreakIndex
+
+        $visibleParts = @()
+        foreach ($t in $p.SelectNodes('.//w:t', $ns)) {
+            $visibleParts += [string]$t.InnerText
+        }
+        $visibleText = ($visibleParts -join '')
+
+        foreach ($br in $pageBreaks) {
+            if ($null -ne $br.ParentNode) {
+                [void]$br.ParentNode.RemoveChild($br)
+            }
+        }
+
+        $markerParagraph = $p
+        if (-not [string]::IsNullOrWhiteSpace($visibleText)) {
+            $markerParagraph = $xml.CreateElement('w', 'p', $nsUri)
+            [void]$p.ParentNode.InsertBefore($markerParagraph, $p)
+        }
+
+        $markerRun = $xml.CreateElement('w', 'r', $nsUri)
+        $markerNode = $xml.CreateElement('w', 't', $nsUri)
+        $markerNode.InnerText = $markerText
+        [void]$markerRun.AppendChild($markerNode)
+        [void]$markerParagraph.AppendChild($markerRun)
+    }
+
+    # Include any marker paragraphs inserted above in the sanitisation pass.
     $paragraphs = @($xml.SelectNodes('//w:body//w:p', $ns))
 
     foreach ($p in $paragraphs) {
@@ -194,6 +288,17 @@ try {
             }
         }
 
+        # Make real Word tabs visible to Pandoc on the temporary read copy.
+        # Pandoc otherwise tends to flatten/drop inline <w:tab/> elements.
+        # Leading tabs are later migrated back to hidden paragraph metadata,
+        # while tabs between words remain literal editor TAB characters.
+        $tabNodes = @($p.SelectNodes('.//w:tab', $ns))
+        foreach ($tabNode in $tabNodes) {
+            $t = $xml.CreateElement('w', 't', $nsUri)
+            $t.InnerText = $tabMarker
+            [void]$tabNode.ParentNode.ReplaceChild($t, $tabNode)
+        }
+
         # A paragraph is considered truly empty only when it contains no
         # visible text and no structural inline object/field/break/tab.
         # Paragraph properties (w:pPr) are intentionally allowed.
@@ -220,7 +325,7 @@ try {
 finally {
     if ($null -ne $zip) { $zip.Dispose() }
 }
-]], path, marker)
+]], path, marker, tab_marker, page_break_marker)
 
   local ok, output = run_powershell(script)
   if not ok then
@@ -336,7 +441,7 @@ local function apply_docx_window_profile(buf, win)
   vim.wo[win].relativenumber = true
   vim.wo[win].signcolumn = "no"
   vim.wo[win].statusline =
-    "%t %m %= %{v:lua.WordVimPageStatus()} %l:%c %p%%"
+    "%t %m %= %{v:lua.WordVimLanguageStatus()}  %{v:lua.WordVimPageStatus()} %l:%c %p%%"
 end
 
 local function restore_window_profile(win)
@@ -563,6 +668,43 @@ finally {
 end
 
 -- ============================================================
+-- Inline underline editor markers
+--
+-- Editor representation:     ++underlined text++
+-- Pandoc/Word representation: [underlined text]{custom-style="Underline"}
+-- ============================================================
+
+local function underline_to_editor_lines(lines)
+  local result = {}
+
+  for _, line in ipairs(lines or {}) do
+    line = tostring(line or "")
+    line = line:gsub(
+      "%[([^%]]-)%]%{custom%-style=[\"']Underline[\"']%}",
+      "++%1++"
+    )
+    table.insert(result, line)
+  end
+
+  return result
+end
+
+local function underline_to_markdown_lines(lines)
+  local result = {}
+
+  for _, line in ipairs(lines or {}) do
+    line = tostring(line or "")
+    line = line:gsub(
+      "%+%+([^\n]-)%+%+",
+      "[%1]{custom-style=\"Underline\"}"
+    )
+    table.insert(result, line)
+  end
+
+  return result
+end
+
+-- ============================================================
 -- Remove visible paragraph custom-style wrappers
 -- ============================================================
 
@@ -573,100 +715,137 @@ local function clean_style_blocks(lines)
 
   local function is_div_close(line)
     return line:match("^%s*:::%s*$") ~= nil
+      or line:match("^%s*\\:::%s*$") ~= nil
   end
 
-  local function list_normal_prefix(line)
-    -- Pandoc can wrap a Word paragraph style INSIDE a Markdown
-    -- list item, for example:
+  local function list_prefix_and_body(line)
+    local prefix, body = line:match("^(%s*[-+*]%s+)(.*)$")
+    if prefix then
+      return prefix, body
+    end
+
+    return line:match("^(%s*%d+[%.%)]%s+)(.*)$")
+  end
+
+  local function inline_list_style(line)
+    -- Pandoc often collapses a fenced paragraph style INSIDE a list item
+    -- to a single line during DOCX -> Markdown round-trip:
+    --
+    --   1.  ::: {custom-style="Normal"} text :::
+    --
+    -- Older Word Vim versions did not unwrap this form.  On the next save
+    -- Pandoc could escape the leftover fences, exposing visible "\\:::"
+    -- tokens in the editor.
+    local normalized = tostring(line or ""):gsub("\\:::", ":::")
+    local prefix, body = list_prefix_and_body(normalized)
+
+    if not prefix then
+      return nil
+    end
+
+    local style_name, content = body:match(
+      '^:::%s*{custom%-style="([^"]+)"}%s*(.-)%s*:::%s*$'
+    )
+
+    if not style_name then
+      return nil
+    end
+
+    return prefix, style_name, content
+  end
+
+  local function multiline_list_style(line)
+    -- Three-line variant emitted by some Pandoc versions:
     --
     -- -   ::: {custom-style="Normal"}
     --     text
     --     :::
-    --
-    -- The old cleaner only recognized ::: at column 1, so these
-    -- wrappers remained visible in Neovim.
-    --
-    -- "Normal" is Word's default paragraph style and does not
-    -- need a hidden Word Vim style mark. We can safely unwrap it.
+    local normalized = tostring(line or ""):gsub("\\:::", ":::")
+    local prefix, body = list_prefix_and_body(normalized)
 
-    local prefix = line:match(
-      '^(%s*[-+*]%s+):::%s*{custom%-style="Normal"}%s*$'
-    )
-
-    if prefix then
-      return prefix
+    if not prefix then
+      return nil
     end
 
-    prefix = line:match(
-      '^(%s*%d+[%.%)]%s+):::%s*{custom%-style="Normal"}%s*$'
+    local style_name = body:match(
+      '^:::%s*{custom%-style="([^"]+)"}%s*$'
     )
 
-    return prefix
+    if style_name then
+      return prefix, style_name
+    end
+
+    return nil
+  end
+
+  local function strip_legacy_list_fences(line)
+    -- Migration for documents already saved by the buggy implementation.
+    -- They can contain trailing escaped closing fences such as:
+    --
+    --   1 remark text \\::: \\:::
+    --
+    -- Only list items are touched, and only trailing fence tokens.
+    local prefix, body = list_prefix_and_body(line)
+    if not prefix then
+      return line
+    end
+
+    local changed = false
+    while body:match("%s+\\:::%s*$") do
+      body = body:gsub("%s+\\:::%s*$", "")
+      changed = true
+    end
+
+    if changed then
+      return prefix .. body
+    end
+
+    return line
   end
 
   while i <= #lines do
     -- --------------------------------------------------------
-    -- Case 1: custom-style="Normal" nested inside a list item
+    -- Case 1: styled list paragraph collapsed to one line.
     -- --------------------------------------------------------
-    local list_prefix = list_normal_prefix(lines[i])
+    local inline_prefix, inline_style, inline_content = inline_list_style(lines[i])
 
-    if list_prefix then
+    if inline_prefix then
+      table.insert(clean, inline_prefix .. inline_content)
+      table.insert(assignments, {
+        row = #clean - 1,
+        style = inline_style,
+      })
       i = i + 1
-
-      local first = true
-
-      while i <= #lines and not is_div_close(lines[i]) do
-        local content = lines[i]
-
-        if first then
-          -- Remove Pandoc's indentation belonging to the fenced
-          -- Div and put the actual text back onto the list item.
-          content = content:gsub("^%s*", "")
-          table.insert(clean, list_prefix .. content)
-          first = false
-        else
-          -- Preserve continuation lines. Pandoc already gave
-          -- them list-compatible indentation.
-          table.insert(clean, content)
-        end
-
-        i = i + 1
-      end
-
-      if i <= #lines and is_div_close(lines[i]) then
-        i = i + 1
-      end
-
     else
       -- ------------------------------------------------------
-      -- Case 2: ordinary top-level paragraph style fenced Div
+      -- Case 2: three-line custom-style block nested in a list item.
       -- ------------------------------------------------------
-      local style_name = lines[i]:match(
-        '^%s*:::%s*{custom%-style="([^"]+)"}%s*$'
-      )
+      local list_prefix, list_style = multiline_list_style(lines[i])
 
-      if style_name then
+      if list_prefix then
         i = i + 1
+        local first = true
         local first_content_row = nil
 
         while i <= #lines and not is_div_close(lines[i]) do
-          table.insert(clean, lines[i])
+          local content = lines[i]
 
-          if not first_content_row and lines[i]:match("%S") then
+          if first then
+            content = content:gsub("^%s*", "")
+            table.insert(clean, list_prefix .. content)
             first_content_row = #clean - 1
+            first = false
+          else
+            table.insert(clean, content)
           end
 
           i = i + 1
         end
 
-        -- Every real Word paragraph keeps an explicit style marker,
-        -- INCLUDING Normal.  Normal is not treated as "missing metadata"
-        -- anymore: this makes paragraph identity stable during o/O/Enter,
-        -- image insertion and later DOCX saves.
         if first_content_row then
           table.insert(assignments, {
             row = first_content_row,
-            style = style_name,
+            style = list_style,
           })
         end
 
@@ -674,13 +853,62 @@ local function clean_style_blocks(lines)
           i = i + 1
         end
       else
-        table.insert(clean, lines[i])
-        i = i + 1
+        -- ----------------------------------------------------
+        -- Case 3: ordinary top-level paragraph style fenced Div.
+        -- ----------------------------------------------------
+        local normalized = tostring(lines[i] or ""):gsub("\\:::", ":::")
+        local style_name = normalized:match(
+          '^%s*:::%s*{custom%-style="([^"]+)"}%s*$'
+        )
+
+        if style_name then
+          i = i + 1
+          local first_content_row = nil
+
+          while i <= #lines and not is_div_close(lines[i]) do
+            table.insert(clean, lines[i])
+
+            if not first_content_row and lines[i]:match("%S") then
+              first_content_row = #clean - 1
+            end
+
+            i = i + 1
+          end
+
+          if first_content_row then
+            table.insert(assignments, {
+              row = first_content_row,
+              style = style_name,
+            })
+          end
+
+          if i <= #lines and is_div_close(lines[i]) then
+            i = i + 1
+          end
+        else
+          table.insert(clean, strip_legacy_list_fences(lines[i]))
+          i = i + 1
+        end
       end
     end
   end
 
   return clean, assignments
+end
+
+local function strip_leaked_style_fences(lines)
+  local out = {}
+  for _, raw in ipairs(lines or {}) do
+    local line = tostring(raw or "")
+    -- Migration cleanup for documents already affected by older releases.
+    -- Only trailing/standalone fence artifacts are removed.
+    line = line:gsub("%s+\\:::%s*$", "")
+    line = line:gsub("%s+:::%s*$", "")
+    if not line:match("^%s*\\?:::%s*$") then
+      table.insert(out, line)
+    end
+  end
+  return out
 end
 
 -- ============================================================
@@ -917,7 +1145,7 @@ local function normalize_pandoc_crossrefs(lines)
     local pattern =
       "%[" .. escaped .. "%s+(%d+)%]%{custom%-style=[\"']Hyperlink[\"']%}%((#[^%)]+)%)" ..
       "%s*,%s*page%s*" ..
-      "%[%[(%d+)%]%{custom%-style=[\"']Hyperlink[\"']%}%((#[^%)]+)%)%]"
+      "%[%[(%d+)%]%{custom%-style=[\"']Hyperlink[\"']%}%]%((#[^%)]+)%)"
 
     line = line:gsub(pattern, function(number, ref_target, page, page_target)
       if ref_target == page_target then
@@ -934,9 +1162,9 @@ local function normalize_pandoc_crossrefs(lines)
     -- some DOCX files. Collapse it as well, but only when REF and PAGEREF point
     -- to the same bookmark.
     local wrapped =
-      "%[%[" .. escaped .. "%s+(%d+)%]%{custom%-style=[\"']Hyperlink[\"']%}%((#[^%)]+)%)%]" ..
+      "%[%[" .. escaped .. "%s+(%d+)%]%{custom%-style=[\"']Hyperlink[\"']%}%]%((#[^%)]+)%)" ..
       "%s*,%s*page%s*" ..
-      "%[%[(%d+)%]%{custom%-style=[\"']Hyperlink[\"']%}%((#[^%)]+)%)%]"
+      "%[%[(%d+)%]%{custom%-style=[\"']Hyperlink[\"']%}%]%((#[^%)]+)%)"
 
     line = line:gsub(wrapped, function(number, ref_target, page, page_target)
       if ref_target == page_target then
@@ -1037,6 +1265,7 @@ local function compact_editor_lines(lines, assignments)
   for old_index, line in ipairs(lines) do
     local old_row = old_index - 1
     local trimmed = vim.trim(line)
+    local is_pipe_table_line = trimmed:match("^|.*|$") ~= nil
 
     local fence = trimmed:match("^(```+)")
       or trimmed:match("^(~~~+)")
@@ -1056,6 +1285,15 @@ local function compact_editor_lines(lines, assignments)
     elseif in_fence then
       old_to_new[old_row] = #compact
       table.insert(compact, line)
+
+    elseif is_pipe_table_line and line:find(EMPTY_PARAGRAPH_MARKER, 1, true) then
+      -- Empty paragraphs inside Word table cells are emitted by Pandoc on a
+      -- pipe-table row rather than on a line of their own. Remove the
+      -- temporary read marker from the cell while preserving the row and its
+      -- delimiters, so an empty cell reopens as an empty cell.
+      local cleaned = line:gsub(EMPTY_PARAGRAPH_MARKER, "")
+      old_to_new[old_row] = #compact
+      table.insert(compact, cleaned)
 
     elseif vim.trim(line) == EMPTY_PARAGRAPH_MARKER then
       -- This is a real empty <w:p/> that was temporarily marked in the
@@ -1091,6 +1329,17 @@ end
 
 local function build_markdown_for_save(buf)
   local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+
+  -- Pandoc does not preserve literal TAB characters inside ordinary text as
+  -- Word tabs. Protect inline TABs with a token and turn that token into
+  -- <w:tab/> in indents.apply_to_docx() after Pandoc creates the DOCX.
+  for i, line in ipairs(lines) do
+    lines[i] = (line or ""):gsub("\t", INLINE_TAB_MARKER)
+  end
+
+  -- Convert the compact editor underline marker back to Pandoc's native
+  -- custom-style span before DOCX generation.
+  lines = underline_to_markdown_lines(lines)
 
   -- Replace caption/reference display text with safe temporary markers.
   lines = crossrefs.prepare_markdown_lines(buf, lines)
@@ -1146,7 +1395,16 @@ local function build_markdown_for_save(buf)
     local line = lines[i]
     local row = i - 1
 
-    if toc.has_anchor(buf, row) then
+    local table_block, table_span = tables.lines_at(buf, row)
+
+    if table_block then
+      emit_page_break(row)
+      ensure_blank()
+      for _, table_line in ipairs(table_block) do table.insert(result, table_line) end
+      ensure_blank()
+      i = i + (table_span or 1)
+
+    elseif toc.has_anchor(buf, row) then
       emit_page_break(row)
       ensure_blank()
       table.insert(
@@ -1198,8 +1456,14 @@ local function build_markdown_for_save(buf)
         if
           list_style
           and list_style ~= ""
+          and list_style ~= "Normal"
+          and list_style ~= "List Paragraph"
+          and list_style ~= "Body Text"
         then
-          -- Keep custom paragraph style inside the list item.
+          -- Keep genuinely custom paragraph styles inside the list item.
+          -- Default body/list styles are deliberately NOT wrapped in a
+          -- Pandoc fenced Div.  Pandoc can leak those fences back as visible
+          -- \::: tokens after repeated DOCX round-trips.
           local prefix, body = lines[i]:match("^(%s*[-+*]%s+)(.*)$")
 
           if not prefix then
@@ -1247,14 +1511,40 @@ local function build_markdown_for_save(buf)
         table.insert(paragraph_lines, lines[i])
       end
 
-      if
+      local heading_level = style_name
+        and tostring(style_name):match("^Heading%s+(%d)$")
+      heading_level = tonumber(heading_level)
+
+      local first_heading_hashes = tostring(paragraph_lines[1] or "")
+        :match("^(#+)%s+")
+      local native_heading = heading_level
+        and first_heading_hashes
+        and #first_heading_hashes == heading_level
+
+      if native_heading then
+        -- Do not trust Pandoc/reference-doc style resolution for headings.
+        -- We write a temporary plain-text marker and, after Pandoc creates the
+        -- DOCX, replace the marker with a real w:pStyle=HeadingN directly in
+        -- document.xml.  This makes Heading 1..9 deterministic even when a
+        -- document contains duplicate/custom style definitions.
+        local first = paragraph_lines[1]:gsub("^#+%s*", "")
+        table.insert(
+          result,
+          HEADING_MARKER_PREFIX .. tostring(heading_level) .. "_ " .. first
+        )
+        for idx = 2, #paragraph_lines do
+          table.insert(
+            result,
+            paragraph_lines[idx] == "" and EMPTY_PARAGRAPH_MARKER or paragraph_lines[idx]
+          )
+        end
+      elseif
         style_name
         and style_name ~= ""
       then
-        -- Explicit styles, INCLUDING "Normal", must be written.
-        -- Without an explicit Normal custom style, Pandoc can fall
-        -- back to the reference document's body paragraph style
-        -- (commonly Body Text).
+        -- Explicit non-heading styles, INCLUDING "Normal", must be written.
+        -- Without an explicit Normal custom style, Pandoc can fall back to
+        -- the reference document's body paragraph style (commonly Body Text).
         table.insert(
           result,
           '::: {custom-style="' .. style_name .. '"}'
@@ -1310,6 +1600,8 @@ local function write_word_style(docx, spec)
   local alignment = ps_escape(spec.alignment or "")
   local before = ps_escape(spec.before or "")
   local after = ps_escape(spec.after or "")
+  local outline_level = ps_escape(spec.outline_level or "")
+  local quick_style = spec.quick_style == true
 
   local script = string.format([[
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -1329,6 +1621,8 @@ $color = '%s'
 $alignment = '%s'
 $before = '%s'
 $after = '%s'
+$outlineLevel = '%s'
+$quickStyle = [bool]::Parse('%s')
 
 $nsUri = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) (
@@ -1519,6 +1813,18 @@ try {
                 $spacing.SetAttribute('after', $nsUri, "$afterTwips")
             }
         }
+
+        # For Word Vim fallback heading styles, preserve real Word outline
+        # semantics so TOC/navigation work like native Word headings.
+        # Blank means "leave the document's existing property untouched".
+        if (-not [string]::IsNullOrWhiteSpace($outlineLevel)) {
+            $outline = Ensure-Child $pPr 'outlineLvl'
+            $outline.SetAttribute('val', $nsUri, $outlineLevel)
+        }
+    }
+
+    if ($quickStyle) {
+        [void](Ensure-Child $style 'qFormat')
     }
 
     $settings = New-Object System.Xml.XmlWriterSettings
@@ -1571,7 +1877,9 @@ finally {
     color,
     alignment,
     before,
-    after
+    after,
+    outline_level,
+    b(quick_style)
   )
 
   local ok, output = run_powershell(script)
@@ -1584,6 +1892,168 @@ finally {
     return false
   end
 
+  return true
+end
+
+local function apply_heading_markers_to_docx(docx)
+  local path = ps_escape(docx)
+  local marker = ps_escape(HEADING_MARKER_PREFIX)
+
+  -- Update the existing DOCX archive in place.  Do NOT extract and rebuild
+  -- the ZIP with CreateFromDirectory: on Windows that can create entry names
+  -- such as "word\\document.xml", while the rest of Word Vim (and Word itself)
+  -- expects canonical OPC names with forward slashes: "word/document.xml".
+  local script = string.format([=[
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$path = '%s'
+$markerPrefix = '%s'
+$nsUri = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+$zip = $null
+
+try {
+    $zip = [System.IO.Compression.ZipFile]::Open($path, [System.IO.Compression.ZipArchiveMode]::Update)
+
+    $docEntry = $zip.GetEntry('word/document.xml')
+    if ($null -eq $docEntry) { throw 'word/document.xml not found' }
+
+    $reader = New-Object System.IO.StreamReader($docEntry.Open(), [System.Text.Encoding]::UTF8, $true)
+    try { [xml]$xml = $reader.ReadToEnd() } finally { $reader.Dispose() }
+
+    $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
+    $ns.AddNamespace('w', $nsUri)
+
+    $headingIds = @{}
+    $stylesEntry = $zip.GetEntry('word/styles.xml')
+    if ($null -ne $stylesEntry) {
+        $stylesReader = New-Object System.IO.StreamReader($stylesEntry.Open(), [System.Text.Encoding]::UTF8, $true)
+        try { [xml]$stylesXml = $stylesReader.ReadToEnd() } finally { $stylesReader.Dispose() }
+        $stylesNs = New-Object System.Xml.XmlNamespaceManager($stylesXml.NameTable)
+        $stylesNs.AddNamespace('w', $nsUri)
+        foreach ($style in @($stylesXml.SelectNodes('//w:styles/w:style', $stylesNs))) {
+            $nameNode = $style.SelectSingleNode('w:name', $stylesNs)
+            if ($null -eq $nameNode) { continue }
+            $name = [string]$nameNode.GetAttribute('val', $nsUri)
+            if ($name -match '^Heading\s+([1-9])$') {
+                $key = [int]$Matches[1]
+                if (-not $headingIds.ContainsKey($key)) {
+                    $headingIds[$key] = [string]$style.GetAttribute('styleId', $nsUri)
+                }
+            }
+        }
+    }
+
+    foreach ($p in $xml.SelectNodes('//w:body//w:p', $ns)) {
+        $textNodes = @($p.SelectNodes('.//w:t', $ns))
+        if ($textNodes.Count -eq 0) { continue }
+        $full = ($textNodes | ForEach-Object { $_.'#text' }) -join ''
+        $escaped = [regex]::Escape($markerPrefix)
+        $m = [regex]::Match($full, '^' + $escaped + '([1-9])_\s*')
+        if (-not $m.Success) { continue }
+
+        $level = [int]$m.Groups[1].Value
+        $remaining = $m.Length
+        foreach ($t in $textNodes) {
+            if ($remaining -le 0) { break }
+            $value = [string]$t.'#text'
+            if ($value.Length -le $remaining) {
+                $remaining -= $value.Length
+                $t.'#text' = ''
+            } else {
+                $t.'#text' = $value.Substring($remaining)
+                $remaining = 0
+            }
+        }
+
+        $pPr = $p.SelectSingleNode('w:pPr', $ns)
+        if ($null -eq $pPr) {
+            $pPr = $xml.CreateElement('w', 'pPr', $nsUri)
+            [void]$p.PrependChild($pPr)
+        }
+        $pStyle = $pPr.SelectSingleNode('w:pStyle', $ns)
+        if ($null -eq $pStyle) {
+            $pStyle = $xml.CreateElement('w', 'pStyle', $nsUri)
+            [void]$pPr.PrependChild($pStyle)
+        }
+        $styleId = if ($headingIds.ContainsKey($level) -and -not [string]::IsNullOrWhiteSpace($headingIds[$level])) { $headingIds[$level] } else { 'Heading' + $level }
+        $pStyle.SetAttribute('val', $nsUri, $styleId)
+    }
+
+    $docEntry.Delete()
+    $newEntry = $zip.CreateEntry('word/document.xml', [System.IO.Compression.CompressionLevel]::Optimal)
+    $writer = New-Object System.IO.StreamWriter($newEntry.Open(), (New-Object System.Text.UTF8Encoding($false)))
+    try { $xml.Save($writer) } finally { $writer.Dispose() }
+}
+finally {
+    if ($null -ne $zip) { $zip.Dispose() }
+}
+]=], path, marker)
+
+  local ok, output = run_powershell(script)
+  if not ok then
+    vim.notify("Word Vim: could not apply Heading styles:\n" .. output, vim.log.levels.ERROR)
+    return false
+  end
+  return true
+end
+
+local function dedupe_word_styles(docx)
+  local path = ps_escape(docx)
+
+  -- As above, update styles.xml in the existing OPC archive instead of
+  -- rebuilding the DOCX ZIP.  This preserves canonical forward-slash entry
+  -- names and avoids breaking later post-processors such as pagebreaks.lua.
+  local script = string.format([=[
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$path = '%s'
+$nsUri = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+$zip = $null
+
+try {
+    $zip = [System.IO.Compression.ZipFile]::Open($path, [System.IO.Compression.ZipArchiveMode]::Update)
+    $stylesEntry = $zip.GetEntry('word/styles.xml')
+    if ($null -eq $stylesEntry) { exit 0 }
+
+    $reader = New-Object System.IO.StreamReader($stylesEntry.Open(), [System.Text.Encoding]::UTF8, $true)
+    try { [xml]$xml = $reader.ReadToEnd() } finally { $reader.Dispose() }
+
+    $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
+    $ns.AddNamespace('w', $nsUri)
+    $seenId = @{}
+    $seenName = @{}
+    $remove = New-Object System.Collections.Generic.List[System.Xml.XmlNode]
+
+    foreach ($style in @($xml.SelectNodes('//w:styles/w:style', $ns))) {
+        $id = [string]$style.GetAttribute('styleId', $nsUri)
+        $nameNode = $style.SelectSingleNode('w:name', $ns)
+        $name = if ($null -ne $nameNode) { [string]$nameNode.GetAttribute('val', $nsUri) } else { '' }
+        $idKey = $id.ToLowerInvariant()
+        $type = [string]$style.GetAttribute('type', $nsUri)
+        $nameKey = ($type.ToLowerInvariant() + '|' + (($name.Trim() -replace '\s+', ' ').ToLowerInvariant()))
+        $duplicate = ($idKey -ne '' -and $seenId.ContainsKey($idKey)) -or ($nameKey -ne '' -and $seenName.ContainsKey($nameKey))
+        if ($duplicate) { [void]$remove.Add($style); continue }
+        if ($idKey -ne '') { $seenId[$idKey] = $true }
+        if ($nameKey -ne '') { $seenName[$nameKey] = $true }
+    }
+
+    foreach ($style in $remove) { [void]$style.ParentNode.RemoveChild($style) }
+
+    $stylesEntry.Delete()
+    $newEntry = $zip.CreateEntry('word/styles.xml', [System.IO.Compression.CompressionLevel]::Optimal)
+    $writer = New-Object System.IO.StreamWriter($newEntry.Open(), (New-Object System.Text.UTF8Encoding($false)))
+    try { $xml.Save($writer) } finally { $writer.Dispose() }
+}
+finally {
+    if ($null -ne $zip) { $zip.Dispose() }
+}
+]=], path)
+
+  local ok, output = run_powershell(script)
+  if not ok then
+    vim.notify("Word Vim: could not deduplicate Word styles:\n" .. output, vim.log.levels.ERROR)
+    return false
+  end
   return true
 end
 
@@ -1670,6 +2140,13 @@ local function open_docx(args)
   local raw_lines = vim.fn.readfile(temp_md)
   vim.fn.delete(temp_md)
 
+  -- Restore real inline Word tabs that were exposed to Pandoc as a safe
+  -- temporary token on the read copy.  Literal TABs render as spacing in
+  -- Neovim and are converted back to genuine <w:tab/> on save.
+  for i, line in ipairs(raw_lines) do
+    raw_lines[i] = (line or ""):gsub(INLINE_TAB_MARKER, "\t")
+  end
+
   -- Pandoc can expose an image + real Word Caption as raw HTML <figure>.
   -- Convert that import artifact back to Word Vim's compact editor rows before
   -- paragraph-style cleanup and before crossrefs.restore_from_docx() runs.
@@ -1679,15 +2156,55 @@ local function open_docx(args)
   -- hyperlinks back to the compact text Word Vim shows in the editor.
   raw_lines = normalize_pandoc_crossrefs(raw_lines)
 
+  -- Show underline with a compact editor marker (++text++) instead of the
+  -- verbose Pandoc custom-style span.
+  raw_lines = underline_to_editor_lines(raw_lines)
+
   -- Canonicalize image dimensions so 8cm does not drift to a long Pandoc
   -- inch + height attribute after repeated DOCX round-trips.
   raw_lines = normalize_pandoc_image_dimensions(raw_lines)
 
+  -- Absolute Word extents cannot tell us whether the user originally entered
+  -- width=50%. Restore that semantic percentage from Word Vim metadata stored
+  -- on the corresponding wp:docPr node.
+  raw_lines = images.restore_percent_widths(raw_lines, docx)
+
   local lines, assignments = clean_style_blocks(raw_lines)
+  lines = strip_leaked_style_fences(lines)
+
+  -- A real Word Heading can be exposed by Pandoc +styles as a generic
+  -- custom-style fenced paragraph instead of Markdown '#'.  Word Vim uses
+  -- the visible Markdown heading marker as the editor-side semantic form,
+  -- so reconstruct it from the imported paragraph style before any row
+  -- compaction happens.  This does not add/remove rows, therefore assignment
+  -- row numbers remain valid.
+  for _, item in ipairs(assignments) do
+    local level = tostring(item.style or ""):match("^Heading%s+(%d)$")
+    level = tonumber(level)
+    if level and level >= 1 and level <= 9 then
+      local idx = (tonumber(item.row) or 0) + 1
+      local line = lines[idx] or ""
+      line = line:gsub("^#+%s*", "")
+      lines[idx] = string.rep("#", level) .. " " .. line
+    end
+  end
 
   -- Keep the Neovim view compact: Word paragraphs are adjacent
   -- editor rows, without visible empty separator rows.
   lines, assignments = compact_editor_lines(lines, assignments)
+
+  -- Recover Word Vim tables from metadata rehydrated only in the disposable
+  -- Pandoc copy and replace the pipe-table body with the editor display.
+  local table_specs, table_row_map
+  lines, table_specs, table_row_map = tables.extract(lines)
+  if table_row_map then
+    local remapped = {}
+    for _, item in ipairs(assignments) do
+      local row = table_row_map[item.row]
+      if row ~= nil then remapped[#remapped + 1] = { row = row, style = item.style } end
+    end
+    assignments = remapped
+  end
 
   -- Convert Pandoc Markdown list markers to Word Vim's readable
   -- four-level display (1 / 1.1 / ... and custom bullets).
@@ -1743,8 +2260,12 @@ local function open_docx(args)
   vim.b[buf].docx_original_file = docx
   apply_docx_buffer_profile(buf)
 
+  -- Detect the document proofing language from w:lang.  This initializes
+  -- spell checking and the EN/RU/RO statusline without changing the Windows
+  -- keyboard layout merely because a document was opened.
+  language.load_from_docx(buf, docx)
+
   -- Restore real Word page breaks and page layout settings.
-  pagebreaks.load_from_docx(buf, docx)
   pagesettings.load_from_docx(buf, docx)
 
   -- Restore Word Caption / REF / PAGEREF metadata after Pandoc conversion.
@@ -1791,6 +2312,20 @@ local function open_docx(args)
 
   -- Figure/Table captions and cross-references.
   crossrefs.attach(buf)
+
+  -- EN/RU/RO proofing + keyboard-layout switching.
+  language.attach(buf)
+
+  -- Word Vim shortcut Help.
+  help.attach(buf)
+
+  -- Cell text remains searchable and directly editable. Structural changes
+  -- to table rows/delimiters are restored; those go through :WordTable.
+  tables.attach_recovered(buf, table_specs or {})
+  tables.protect(buf)
+
+  -- Restore anchors after all whole-buffer import transformations.
+  pagebreaks.load_from_docx(buf, docx)
 
   vim.notify(
     "Word Vim: DOCX opened. Word styles cached: " .. #cached_styles,
@@ -1899,6 +2434,19 @@ local function save_docx(args)
     return
   end
 
+  -- Never let a displaced table range consume following paragraphs. Validate
+  -- the exact model-derived table block before creating any output file.
+  local tables_valid, table_validation_error = tables.validate(buf)
+  if not tables_valid then
+    vim.notify(
+      "Word Vim: DOCX save stopped; table structure is inconsistent:\n"
+        .. tostring(table_validation_error)
+        .. "\nOpen the table with :WordTable or undo the structural edit.",
+      vim.log.levels.ERROR
+    )
+    return
+  end
+
   if not create_backup(original) then
     return
   end
@@ -1915,6 +2463,12 @@ local function save_docx(args)
     )
     return
   end
+
+  -- v6.34: make sure any Word Vim fallback style actually referenced by
+  -- the document (including Caption and Markdown headings) exists in the
+  -- temporary reference DOCX. Existing document style definitions always
+  -- win; only missing standard styles are materialized.
+  styles.ensure_referenced_builtin_styles(buf)
 
   if not apply_style_changes(buf, temp_reference) then
     vim.fn.delete(temp_reference)
@@ -1942,6 +2496,35 @@ local function save_docx(args)
       "Word Vim: DOCX save failed:\n" .. output,
       vim.log.levels.ERROR
     )
+    return
+  end
+
+  -- Force editor headings to real Word Heading1..Heading9 paragraph styles.
+  if not apply_heading_markers_to_docx(temp_docx) then
+    vim.fn.delete(temp_docx)
+    return
+  end
+
+  -- Apply table metadata: repeating header rows, merges, borders and fills;
+  -- then move the model out of body text into a standard custom property.
+  local tables_ok, tables_error = tables.apply_to_docx(temp_docx)
+  if not tables_ok then
+    vim.fn.delete(temp_docx)
+    vim.notify("Word Vim: could not apply table formatting:\n" .. tostring(tables_error), vim.log.levels.ERROR)
+    return
+  end
+
+  -- Prevent styles.xml from growing on every save when Pandoc/reference-doc
+  -- emits duplicate style definitions. Existing first definitions win.
+  if not dedupe_word_styles(temp_docx) then
+    vim.fn.delete(temp_docx)
+    return
+  end
+
+  -- Preserve semantic percentage image widths (for example width=50%).
+  -- Pandoc/Word otherwise round-trip them as absolute physical extents only.
+  if not images.apply_to_docx(temp_docx, buf) then
+    vim.fn.delete(temp_docx)
     return
   end
 
@@ -1977,6 +2560,13 @@ local function save_docx(args)
 
   -- Replace the Word Vim TOC marker with a real Word TOC field.
   if not toc.apply_to_docx(temp_docx, buf) then
+    vim.fn.delete(temp_docx)
+    return
+  end
+
+  -- Persist the active Word Vim proofing language as real Word w:lang
+  -- on document runs and in styles.xml defaults.
+  if not language.apply_to_docx(temp_docx, buf) then
     vim.fn.delete(temp_docx)
     return
   end
@@ -2075,102 +2665,7 @@ function M.setup()
     end,
   })
 
-  vim.api.nvim_create_user_command("WordHelp", function()
-    local lines = {
-      "WORD VIM",
-      "========",
-      "",
-      "Formatting",
-      "----------",
-      "Visual + Space b   Bold",
-      "Visual + Space i   Italic",
-      "Visual + Space u   Underline",
-      "Visual + Space s   Strikeout",
-      "",
-      "Headings",
-      "--------",
-      "Space 1..6        Heading 1..6",
-      "",
-      "Lists",
-      "-----",
-      "Space l b         Bullet list",
-      "Space l n         Numbered list",
-      "",
-      "Pages",
-      "-----",
-      "Space p b         Insert page break before paragraph",
-      "Space p d         Delete page break before paragraph",
-      "Space p s         Page Setup",
-      ":WordPageBreak",
-      ":WordPageBreakDelete",
-      ":WordPageSetup",
-      "",
-      "Captions / Cross-references",
-      "---------------------------",
-      "Space c f         Figure caption",
-      "Space c t         Table caption",
-      "Space r f         Reference to Figure",
-      "Space r t         Reference to Table",
-      ":WordCaptionFigure / :WordCaptionTable",
-      ":WordRefFigure / :WordRefTable",
-      "",
-      "Table of Contents",
-      "-----------------",
-      "Space t c         Insert contents",
-      "Space t d         Delete contents",
-      "Space t o         Toggle contents window",
-      ":WordTOC",
-      ":WordTOCDelete",
-      ":WordTOCRefresh",
-      ":WordTOCWindow",
-      "",
-      "Tables",
-      "------",
-      ":WordTable",
-      ":WordTable 5 4",
-      "",
-      "Images",
-      "------",
-      "Space i i          Telescope image picker",
-      ":WordImagePicker",
-      ":WordImage",
-      ":WordImage C:\\Users\\Leo\\Pictures\\photo.png",
-      ":WordImageWidth 8cm",
-      ":WordImageScale 50",
-      ":WordImageResize 125",
-      ":WordImageRotate 90",
-      ":WordImageRotate 180",
-      ":WordImageRotate 270",
-      ":WordImageReset",
-      "",
-      "Styles",
-      "------",
-      ":WordStyle        Show current paragraph style",
-      ":WordStyles       Choose/apply a paragraph style",
-      ":WordStyleApply Body Text",
-      ":WordStyleEdit Normal",
-      ":WordStyleEdit Heading 1",
-      ":WordStyleNew",
-      "",
-      "Style UI",
-      "--------",
-      "Space w s          Toggle both style panels",
-      ":WordStyleUI       Open both style panels",
-      ":WordStyleUIClose  Close both style panels",
-      ":WordStyleUIToggle Toggle both style panels",
-      "",
-      "Save",
-      "----",
-      ":w",
-    }
 
-    vim.cmd("new")
-    vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
-    vim.bo.buftype = "nofile"
-    vim.bo.bufhidden = "wipe"
-    vim.bo.swapfile = false
-    vim.bo.modifiable = false
-  end, {})
 end
 
 return M

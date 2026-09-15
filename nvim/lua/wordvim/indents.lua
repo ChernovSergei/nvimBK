@@ -10,8 +10,9 @@
 --   marks are enabled.
 --
 -- Implementation:
---   * Neovim stores the number of leading Word tabs as hidden
---     extmark metadata.
+--   * Leading Word tabs are stored as hidden extmark metadata.
+--   * Tabs between words are ordinary literal TAB characters in the editor,
+--     so Name<Tab>Value visibly behaves like a real tab stop.
 --   * Neovim displays them as virtual spaces (no arrow symbols).
 --   * The Markdown text itself is NOT prefixed with literal tabs,
 --     so Pandoc does not accidentally turn paragraphs into code.
@@ -20,7 +21,7 @@
 --   * On open, Word Vim reads leading <w:tab/> elements back.
 --
 -- Keys:
---   Insert mode Tab        = add one genuine Word tab
+--   Insert mode Tab        = insert a genuine Word tab at cursor
 --   Insert mode Backspace  = remove one leading Word tab at row start
 --   Insert mode Shift+Tab  = remove one leading Word tab
 --   Normal mode Tab        = increase paragraph left indent
@@ -42,6 +43,7 @@ local state = {}
 local indent_state = {}
 
 local DISPLAY_SPACES_PER_TAB = 4
+local INLINE_TAB_MARKER = "WORDVIM_INLINE_TAB_5F83A1D4"
 local INDENT_STEP_TWIPS = 708
 local DISPLAY_SPACES_PER_INDENT = 4
 
@@ -165,7 +167,16 @@ local function set_tab_count(buf, row, count, explicit)
     row,
     0,
     {
-      right_gravity = false,
+      -- Leading-tab metadata belongs to the paragraph text.  When a new
+      -- paragraph is inserted immediately before this row (O, o on the
+      -- previous row, paste, etc.), keep the extmark attached to the
+      -- original paragraph instead of leaving it on the newly inserted row.
+      right_gravity = true,
+      end_row = math.min(row + 1, vim.api.nvim_buf_line_count(buf)),
+      end_col = 0,
+      end_right_gravity = false,
+      invalidate = true,
+      undo_restore = true,
     }
   )
 
@@ -196,7 +207,16 @@ local function set_paragraph_indent(buf, row, left, explicit)
   end
 
   local id = vim.api.nvim_buf_set_extmark(
-    buf, indent_namespace, row, 0, { right_gravity = false }
+    buf, indent_namespace, row, 0, {
+      -- Paragraph-indent metadata must move with the original paragraph when
+      -- rows are inserted before it.  This mirrors paragraph-style extmarks.
+      right_gravity = true,
+      end_row = math.min(row + 1, vim.api.nvim_buf_line_count(buf)),
+      end_col = 0,
+      end_right_gravity = false,
+      invalidate = true,
+      undo_restore = true,
+    }
   )
 
   get_indent_state(buf).marks[id] = {
@@ -269,10 +289,28 @@ function M.get_tab_count(buf, row)
   return 0, false
 end
 
+local function purge_invalid_metadata(buf)
+  local function purge(ns, state)
+    local marks = vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })
+    for _, mark in ipairs(marks) do
+      local details = mark[4] or {}
+      if details.invalid then
+        state.marks[mark[1]] = nil
+        pcall(vim.api.nvim_buf_del_extmark, buf, ns, mark[1])
+      end
+    end
+  end
+
+  purge(namespace, get_state(buf))
+  purge(indent_namespace, get_indent_state(buf))
+end
+
 function M.refresh_display(buf)
   if not vim.api.nvim_buf_is_valid(buf) then
     return
   end
+
+  purge_invalid_metadata(buf)
 
   vim.api.nvim_buf_clear_namespace(
     buf,
@@ -901,7 +939,102 @@ local function collect_save_specs(buf)
   return specs
 end
 
+local function replace_inline_tab_markers(docx)
+  local path = ps_escape(docx)
+  local marker = ps_escape(INLINE_TAB_MARKER)
+
+  local script = string.format([=[
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+Add-Type -AssemblyName System.IO.Compression
+
+$path = '%s'
+$marker = '%s'
+$zip = $null
+
+try {
+    $zip = [System.IO.Compression.ZipFile]::Open($path, 'Update')
+    $entry = $zip.GetEntry('word/document.xml')
+
+    if ($null -eq $entry) {
+        foreach ($candidate in @($zip.Entries)) {
+            $normalized = $candidate.FullName.Replace('\', '/')
+            if ($normalized -eq 'word/document.xml') {
+                $entry = $candidate
+                break
+            }
+        }
+    }
+
+    if ($null -eq $entry) { throw 'word/document.xml not found' }
+
+    $reader = New-Object System.IO.StreamReader($entry.Open())
+    [xml]$xml = $reader.ReadToEnd()
+    $reader.Close()
+
+    $nsUri = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
+    $ns.AddNamespace('w', $nsUri)
+
+    $nodes = @($xml.SelectNodes('//w:t[contains(text(), "' + $marker + '")]', $ns))
+
+    foreach ($t in $nodes) {
+        $run = $t.ParentNode
+        if ($null -eq $run -or $run.LocalName -ne 'r') { continue }
+
+        $parts = $t.InnerText.Split([string[]]@($marker), [System.StringSplitOptions]::None)
+
+        for ($i = 0; $i -lt $parts.Count; $i++) {
+            if ($parts[$i].Length -gt 0) {
+                $newT = $xml.CreateElement('w', 't', $nsUri)
+                $newT.InnerText = $parts[$i]
+                if ($parts[$i].StartsWith(' ') -or $parts[$i].EndsWith(' ')) {
+                    $space = $xml.CreateAttribute('xml', 'space', 'http://www.w3.org/XML/1998/namespace')
+                    $space.Value = 'preserve'
+                    [void]$newT.Attributes.Append($space)
+                }
+                [void]$run.InsertBefore($newT, $t)
+            }
+
+            if ($i -lt ($parts.Count - 1)) {
+                $tab = $xml.CreateElement('w', 'tab', $nsUri)
+                [void]$run.InsertBefore($tab, $t)
+            }
+        }
+
+        [void]$run.RemoveChild($t)
+    }
+
+    $oldName = $entry.FullName
+    $entry.Delete()
+    $newEntry = $zip.CreateEntry('word/document.xml')
+    $writer = New-Object System.IO.StreamWriter($newEntry.Open(), (New-Object System.Text.UTF8Encoding($false)))
+    $xml.Save($writer)
+    $writer.Close()
+}
+finally {
+    if ($null -ne $zip) { $zip.Dispose() }
+}
+]=], path, marker)
+
+  local ok, output = run_powershell(script)
+  if not ok then
+    vim.notify(
+      "Word Vim: could not restore inline Word tabs:\n" .. tostring(output),
+      vim.log.levels.ERROR
+    )
+    return false
+  end
+
+  return true
+end
+
 function M.apply_to_docx(docx, buf)
+  -- Always process inline TAB tokens, even when the document has no leading
+  -- tab/indent metadata at all.
+  if not replace_inline_tab_markers(docx) then
+    return false
+  end
+
   local specs = collect_save_specs(buf)
 
   if #specs == 0 then
@@ -1352,18 +1485,62 @@ local function delete_current_lines(buf)
 end
 
 function M.attach(buf)
+  local group = vim.api.nvim_create_augroup("WordVimIndents_" .. tostring(buf), { clear = true })
+
+  -- Native undo/redo changes buffer text but extmark-only metadata does not
+  -- create its own undo entry.  Refresh after every text-state change so
+  -- invalidated paragraph ranges disappear immediately instead of leaving a
+  -- ghost indent marker on an empty/deleted paragraph.
+  vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI", "InsertLeave" }, {
+    group = group,
+    buffer = buf,
+    callback = function()
+      vim.schedule(function()
+        if vim.api.nvim_buf_is_valid(buf) then
+          M.refresh_display(buf)
+        end
+      end)
+    end,
+  })
+
   -- INSERT MODE: genuine Word TAB
   vim.keymap.set(
     "i",
     "<Tab>",
     function()
-      local row = vim.api.nvim_win_get_cursor(0)[1] - 1
+      local cursor = vim.api.nvim_win_get_cursor(0)
+      local row = cursor[1] - 1
+      local col = cursor[2]
 
-      vim.schedule(function()
-        if vim.api.nvim_buf_is_valid(buf) then
-          if not try_change_list_level(buf, row, 1) then
+      -- In a list, Tab changes nesting level exactly as before.
+      if try_change_list_level(buf, row, 1) then
+        return ""
+      end
+
+      -- At physical column 0 keep the historical hidden leading Word-tab
+      -- behavior so paragraph-leading tabs never turn Markdown into code.
+      if col == 0 then
+        vim.schedule(function()
+          if vim.api.nvim_buf_is_valid(buf) then
             M.change_tab_count(buf, row, 1)
           end
+        end)
+        return ""
+      end
+
+      -- Between words insert a literal TAB byte directly.  We do not return
+      -- the Tab key from this expr mapping because expandtab would turn it
+      -- into spaces.  The direct buffer edit preserves a real TAB character.
+      vim.schedule(function()
+        if not vim.api.nvim_buf_is_valid(buf) then
+          return
+        end
+
+        vim.api.nvim_buf_set_text(buf, row, col, row, col, { "\t" })
+
+        local win = vim.fn.bufwinid(buf)
+        if win ~= -1 and vim.api.nvim_win_is_valid(win) then
+          pcall(vim.api.nvim_win_set_cursor, win, { row + 1, col + 1 })
         end
       end)
 
@@ -1383,13 +1560,37 @@ function M.attach(buf)
     "i",
     "<S-Tab>",
     function()
-      local row = vim.api.nvim_win_get_cursor(0)[1] - 1
+      local cursor = vim.api.nvim_win_get_cursor(0)
+      local row = cursor[1] - 1
+      local col = cursor[2]
+
+      if try_change_list_level(buf, row, -1) then
+        return ""
+      end
+
+      local line = vim.api.nvim_buf_get_lines(buf, row, row + 1, false)[1] or ""
+
+      -- If the character immediately before the cursor is an inline TAB,
+      -- delete that TAB first.
+      if col > 0 and line:sub(col, col) == "\t" then
+        vim.schedule(function()
+          if not vim.api.nvim_buf_is_valid(buf) then
+            return
+          end
+
+          vim.api.nvim_buf_set_text(buf, row, col - 1, row, col, {})
+
+          local win = vim.fn.bufwinid(buf)
+          if win ~= -1 and vim.api.nvim_win_is_valid(win) then
+            pcall(vim.api.nvim_win_set_cursor, win, { row + 1, col - 1 })
+          end
+        end)
+        return ""
+      end
 
       vim.schedule(function()
         if vim.api.nvim_buf_is_valid(buf) then
-          if not try_change_list_level(buf, row, -1) then
-            M.change_tab_count(buf, row, -1)
-          end
+          M.change_tab_count(buf, row, -1)
         end
       end)
 

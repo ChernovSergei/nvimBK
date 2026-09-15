@@ -1049,20 +1049,29 @@ function M.restore_editor_lines(buf, lines, assignments, docx)
   -- Remove the entire TOC-result region immediately following the title.
   -- This also repairs documents that already contain several stale copies
   -- created by v5.3.
+  local function is_markdown_heading(line)
+    -- Never treat a real editor heading as cached TOC output.  Pandoc's
+    -- Markdown headings begin with one or more # characters, and
+    -- normalize_text() intentionally strips that syntax.  Without this
+    -- guard a real heading whose title matches a TOC entry can be deleted.
+    return tostring(line or ""):match("^%s*#{1,6}%s+") ~= nil
+  end
+
   local function matches_toc_entry(line)
+    if is_markdown_heading(line) then
+      return false
+    end
+
     local candidate = normalize_text(line)
 
     for _, wanted in ipairs(wanted_entries) do
-      if candidate == wanted then
-        return true
-      end
-
       if candidate:sub(1, #wanted) == wanted then
         local rest = vim.trim(candidate:sub(#wanted + 1))
 
-        -- Pandoc may represent the Word tab leader as spaces/dots and then
-        -- the cached page number. Accept both "Title 3" and
-        -- "Title ........ 3" forms.
+        -- Only remove a cached TOC result when there is an explicit page
+        -- number (optionally preceded by a Word/Pandoc tab leader).  A bare
+        -- line equal to a heading title is legitimate document content and
+        -- must not be removed.
         if rest:match("^%d+$") or rest:match("^[%.·…%s]+%d+$") then
           return true
         end
@@ -1077,6 +1086,10 @@ function M.restore_editor_lines(buf, lines, assignments, docx)
   local saw_toc_line = false
 
   local function looks_like_cached_toc_line(line)
+    if is_markdown_heading(line) then
+      return false
+    end
+
     local candidate = normalize_text(line)
 
     if candidate == "" then
@@ -1103,9 +1116,13 @@ function M.restore_editor_lines(buf, lines, assignments, docx)
       remove[i - 1] = true
       saw_toc_line = true
       i = i + 1
-    elseif saw_toc_line and candidate == wanted_title then
+    elseif saw_toc_line
+      and candidate == wanted_title
+      and not is_markdown_heading(lines[i]) then
       -- v5.3/v5.4 could have persisted another TOC title between
       -- duplicate cached result blocks. Keep the first anchor title only.
+      -- A genuine Markdown heading with the same visible text is never
+      -- removed.
       remove[i - 1] = true
       i = i + 1
     else

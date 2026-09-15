@@ -35,8 +35,8 @@ local ns_right = vim.api.nvim_create_namespace("WordVimStyleUIRight")
 
 local sessions = {}
 
-local LEFT_WIDTH = 5
-local RIGHT_WIDTH = 30
+local DEFAULT_LEFT_WIDTH = 4
+local DEFAULT_RIGHT_WIDTH = 32
 
 -- ------------------------------------------------------------
 -- Utility
@@ -116,12 +116,23 @@ local function style_priority(name)
     return 1
   end
 
-  if lower == "body text" then
+  if lower == "no spacing" then
     return 2
   end
-
-  if lower == "code" then
+  if lower == "title" then
     return 3
+  end
+  if lower == "subtitle" then
+    return 4
+  end
+  if lower == "body text" then
+    return 5
+  end
+  if lower == "list paragraph" then
+    return 6
+  end
+  if lower == "code" then
+    return 7
   end
 
   local heading = name and name:match("^Heading%s+(%d+)$")
@@ -149,11 +160,13 @@ local function rebuild_style_numbers(session)
   session.number_to_style = {}
   session.style_to_number = {}
   session.style_order = {}
+  session.style_builtin = {}
 
   for index, style in ipairs(cached) do
     session.number_to_style[index] = style.name
     session.style_to_number[(style.name or ""):lower()] = index
     table.insert(session.style_order, style.name)
+    session.style_builtin[index] = style.wordvim_builtin == true
   end
 end
 
@@ -548,12 +561,15 @@ local function render_right(session)
   local lines = {}
 
   for number, name in ipairs(session.style_order) do
-    local prefix = (name == active_style) and "> " or "  "
+    local is_active = (name or ""):lower() == (active_style or ""):lower()
+    local prefix = is_active and "> " or "  "
+    local suffix = session.style_builtin[number] and "  [Word Vim]" or ""
     lines[number] = string.format(
-      "%s%2d  %s",
+      "%s%2d  %s%s",
       prefix,
       number,
-      name
+      name,
+      suffix
     )
   end
 
@@ -590,7 +606,10 @@ local function render_right(session)
       )
     end
 
-    if session.style_order[number] == active_style then
+    if
+      (session.style_order[number] or ""):lower()
+      == (active_style or ""):lower()
+    then
       vim.api.nvim_buf_add_highlight(
         session.right_buf,
         ns_right,
@@ -794,7 +813,7 @@ local function configure_left_window(win)
   vim.wo[win].wrap = false
   vim.wo[win].cursorline = true
   vim.wo[win].scrollbind = false
-  vim.wo[win].winfixwidth = true
+  vim.wo[win].winfixwidth = false
 end
 
 local function configure_right_window(win)
@@ -804,7 +823,74 @@ local function configure_right_window(win)
   vim.wo[win].foldcolumn = "0"
   vim.wo[win].wrap = false
   vim.wo[win].cursorline = true
-  vim.wo[win].winfixwidth = true
+  vim.wo[win].winfixwidth = false
+end
+
+local function left_width()
+  return math.max(3, tonumber(vim.g.wordvim_style_left_width) or DEFAULT_LEFT_WIDTH)
+end
+
+local function right_width()
+  return math.max(20, tonumber(vim.g.wordvim_style_right_width) or DEFAULT_RIGHT_WIDTH)
+end
+
+local function restore_document_window(session)
+  if not session or not valid_win(session.doc_win) then
+    return
+  end
+
+  if session.old_wrap ~= nil then
+    vim.wo[session.doc_win].wrap = session.old_wrap
+  end
+  if session.old_linebreak ~= nil then
+    vim.wo[session.doc_win].linebreak = session.old_linebreak
+  end
+  if session.old_breakindent ~= nil then
+    vim.wo[session.doc_win].breakindent = session.old_breakindent
+  end
+  if session.old_smoothscroll ~= nil then
+    vim.wo[session.doc_win].smoothscroll = session.old_smoothscroll
+  end
+  if session.old_scrollbind ~= nil then
+    vim.wo[session.doc_win].scrollbind = session.old_scrollbind
+  end
+end
+
+local function cleanup_session_if_empty(session)
+  if not session then
+    return
+  end
+
+  local left_open = valid_win(session.left_win)
+  local right_open = valid_win(session.right_win)
+
+  if not left_open and not right_open then
+    restore_document_window(session)
+    sessions[session.doc_buf] = nil
+  end
+end
+
+function M.close_side(doc_buf, side)
+  local session = sessions[doc_buf]
+  if not session then
+    return
+  end
+
+  if side == "left" then
+    if valid_win(session.left_win) then
+      pcall(vim.api.nvim_win_close, session.left_win, true)
+    end
+    session.left_win = nil
+    session.left_buf = nil
+  elseif side == "right" then
+    if valid_win(session.right_win) then
+      pcall(vim.api.nvim_win_close, session.right_win, true)
+    end
+    session.right_win = nil
+    session.right_buf = nil
+  end
+
+  cleanup_session_if_empty(session)
 end
 
 function M.close(doc_buf)
@@ -822,131 +908,122 @@ function M.close(doc_buf)
     pcall(vim.api.nvim_win_close, session.right_win, true)
   end
 
-  if valid_win(session.doc_win) then
-    if session.old_wrap ~= nil then
-      vim.wo[session.doc_win].wrap = session.old_wrap
-    end
-
-    if session.old_linebreak ~= nil then
-      vim.wo[session.doc_win].linebreak = session.old_linebreak
-    end
-
-    if session.old_breakindent ~= nil then
-      vim.wo[session.doc_win].breakindent = session.old_breakindent
-    end
-
-    if session.old_smoothscroll ~= nil then
-      vim.wo[session.doc_win].smoothscroll = session.old_smoothscroll
-    end
-
-    if session.old_scrollbind ~= nil then
-      vim.wo[session.doc_win].scrollbind = session.old_scrollbind
-    end
-  end
-
+  restore_document_window(session)
   sessions[doc_buf] = nil
 end
 
-function M.open(doc_buf)
-  doc_buf = doc_buf or vim.api.nvim_get_current_buf()
+local function install_common_side_mappings(session, buf, side)
+  vim.keymap.set("n", "<leader>ws", function()
+    M.toggle()
+  end, {
+    buffer = buf,
+    silent = true,
+    desc = "Word Vim: toggle both style panels",
+  })
 
-  if not is_docx_buffer(doc_buf) then
-    vim.notify(
-      "Word Vim: open a DOCX document first",
-      vim.log.levels.WARN
-    )
-    return
-  end
+  vim.keymap.set("n", "<leader>wl", function()
+    M.toggle_left()
+  end, {
+    buffer = buf,
+    silent = true,
+    desc = "Word Vim: toggle left style gutter",
+  })
 
-  if sessions[doc_buf] then
-    local existing = sessions[doc_buf]
+  vim.keymap.set("n", "<leader>wr", function()
+    M.toggle_right()
+  end, {
+    buffer = buf,
+    silent = true,
+    desc = "Word Vim: toggle right style list",
+  })
 
-    if valid_win(existing.left_win) and valid_win(existing.right_win) then
-      refresh(existing)
-      return
+  vim.keymap.set("n", "q", function()
+    local current = sessions[session.doc_buf]
+    if current then
+      M.close_side(session.doc_buf, side)
+      if valid_win(current.doc_win) then
+        vim.api.nvim_set_current_win(current.doc_win)
+      end
     end
+  end, {
+    buffer = buf,
+    silent = true,
+    desc = "Word Vim: close this style panel",
+  })
+end
 
-    M.close(doc_buf)
-  end
-
-  local doc_win = vim.fn.bufwinid(doc_buf)
-
-  if doc_win == -1 then
-    vim.notify(
-      "Word Vim: DOCX buffer is not visible",
-      vim.log.levels.ERROR
-    )
+local function ensure_left_panel(session)
+  if valid_win(session.left_win) then
     return
   end
 
-  local session = {
-    doc_buf = doc_buf,
-    doc_win = doc_win,
-    rendering = false,
-    old_wrap = vim.wo[doc_win].wrap,
-    old_linebreak = vim.wo[doc_win].linebreak,
-    old_breakindent = vim.wo[doc_win].breakindent,
-    old_smoothscroll = vim.wo[doc_win].smoothscroll,
-    old_scrollbind = vim.wo[doc_win].scrollbind,
-  }
-
-  sessions[doc_buf] = session
-
-  -- Long document lines remain readable while the side panels
-  -- are open. The left style gutter is expanded to the exact
-  -- screen height of every wrapped document line.
-  vim.wo[doc_win].wrap = true
-  vim.wo[doc_win].linebreak = true
-  vim.wo[doc_win].breakindent = true
-  vim.wo[doc_win].smoothscroll = false
-  vim.wo[doc_win].scrollbind = false
-
-  -- LEFT
-  vim.api.nvim_set_current_win(doc_win)
-  vim.cmd("leftabove " .. LEFT_WIDTH .. "vnew")
+  vim.api.nvim_set_current_win(session.doc_win)
+  vim.cmd("leftabove " .. left_width() .. "vnew")
 
   session.left_win = vim.api.nvim_get_current_win()
   session.left_buf = vim.api.nvim_get_current_buf()
 
   configure_side_buffer(session.left_buf, "wordvimstylegutter")
   configure_left_window(session.left_win)
+  vim.api.nvim_buf_set_name(
+    session.left_buf,
+    "WordVim://StyleGutter/" .. session.doc_buf
+  )
 
-  -- RIGHT
-  vim.api.nvim_set_current_win(doc_win)
-  vim.cmd("rightbelow " .. RIGHT_WIDTH .. "vnew")
+  install_common_side_mappings(session, session.left_buf, "left")
+
+  vim.keymap.set("n", "<CR>", function()
+    vim.cmd("startinsert")
+  end, {
+    buffer = session.left_buf,
+    silent = true,
+    desc = "Word Vim: edit style number",
+  })
+
+  vim.api.nvim_create_autocmd("InsertLeave", {
+    buffer = session.left_buf,
+    callback = function()
+      local current = sessions[session.doc_buf]
+      if current then
+        apply_left_change(current)
+      end
+    end,
+  })
+
+  vim.api.nvim_create_autocmd("CursorMoved", {
+    buffer = session.left_buf,
+    callback = function()
+      local current = sessions[session.doc_buf]
+      if current and not current.rendering then
+        sync_document_from_left(current)
+        render_right(current)
+      end
+    end,
+  })
+end
+
+local function ensure_right_panel(session)
+  if valid_win(session.right_win) then
+    return
+  end
+
+  vim.api.nvim_set_current_win(session.doc_win)
+  vim.cmd("rightbelow " .. right_width() .. "vnew")
 
   session.right_win = vim.api.nvim_get_current_win()
   session.right_buf = vim.api.nvim_get_current_buf()
 
   configure_side_buffer(session.right_buf, "wordvimstyles")
   configure_right_window(session.right_win)
-
-  vim.api.nvim_buf_set_name(
-    session.left_buf,
-    "WordVim://StyleGutter/" .. doc_buf
-  )
-
   vim.api.nvim_buf_set_name(
     session.right_buf,
-    "WordVim://Styles/" .. doc_buf
+    "WordVim://Styles/" .. session.doc_buf
   )
 
-  -- Space+w+s must behave as a real toggle from all three panes.
-  -- This is especially important after focus moves into the left/right
-  -- style panels: the document-local mapping is not active there.
-  for _, side_buf in ipairs({ session.left_buf, session.right_buf }) do
-    vim.keymap.set("n", "<leader>ws", function()
-      M.toggle()
-    end, {
-      buffer = side_buf,
-      silent = true,
-      desc = "Word Vim: toggle style UI",
-    })
-  end
+  install_common_side_mappings(session, session.right_buf, "right")
 
-  -- Open settings for the style under the cursor.
   vim.keymap.set("n", "<CR>", function()
-    local current = sessions[doc_buf]
+    local current = sessions[session.doc_buf]
     if current then
       open_selected_style_editor(current)
     end
@@ -957,7 +1034,7 @@ function M.open(doc_buf)
   })
 
   vim.keymap.set("n", "e", function()
-    local current = sessions[doc_buf]
+    local current = sessions[session.doc_buf]
     if current then
       open_selected_style_editor(current)
     end
@@ -966,55 +1043,92 @@ function M.open(doc_buf)
     silent = true,
     desc = "Word Vim: edit selected style",
   })
+end
+
+function M.open(doc_buf, mode)
+  doc_buf = doc_buf or vim.api.nvim_get_current_buf()
+  mode = mode or "both"
+
+  if not is_docx_buffer(doc_buf) then
+    vim.notify(
+      "Word Vim: open a DOCX document first",
+      vim.log.levels.WARN
+    )
+    return
+  end
+
+  local session = sessions[doc_buf]
+
+  if not session then
+    local doc_win = vim.fn.bufwinid(doc_buf)
+
+    if doc_win == -1 then
+      vim.notify(
+        "Word Vim: DOCX buffer is not visible",
+        vim.log.levels.ERROR
+      )
+      return
+    end
+
+    session = {
+      doc_buf = doc_buf,
+      doc_win = doc_win,
+      rendering = false,
+      old_wrap = vim.wo[doc_win].wrap,
+      old_linebreak = vim.wo[doc_win].linebreak,
+      old_breakindent = vim.wo[doc_win].breakindent,
+      old_smoothscroll = vim.wo[doc_win].smoothscroll,
+      old_scrollbind = vim.wo[doc_win].scrollbind,
+    }
+
+    sessions[doc_buf] = session
+
+    vim.wo[doc_win].wrap = true
+    vim.wo[doc_win].linebreak = true
+    vim.wo[doc_win].breakindent = true
+    vim.wo[doc_win].smoothscroll = false
+    vim.wo[doc_win].scrollbind = false
+  end
+
+  if mode == "both" or mode == "left" then
+    ensure_left_panel(session)
+  end
+
+  if mode == "both" or mode == "right" then
+    ensure_right_panel(session)
+  end
 
   rebuild_style_numbers(session)
   ensure_highlights(session)
   build_paragraph_model(session)
   render_left(session)
   render_right(session)
-
-  -- Edit a number in the left panel, press Esc, style changes.
-  vim.api.nvim_create_autocmd("InsertLeave", {
-    buffer = session.left_buf,
-    callback = function()
-      local current = sessions[doc_buf]
-
-      if current then
-        apply_left_change(current)
-      end
-    end,
-  })
-
-  vim.api.nvim_create_autocmd("CursorMoved", {
-    buffer = session.left_buf,
-    callback = function()
-      local current = sessions[doc_buf]
-
-      if current and not current.rendering then
-        sync_document_from_left(current)
-        render_right(current)
-      end
-    end,
-  })
-
-  -- Make changing a number fast: `cc2<Esc>`, `cw2<Esc>`, etc.
-  vim.keymap.set("n", "<CR>", function()
-    vim.cmd("startinsert")
-  end, {
-    buffer = session.left_buf,
-    silent = true,
-    desc = "Word Vim: edit style number",
-  })
-
-  -- Keep document and left gutter aligned.
   sync_left_view(session)
 
-  vim.api.nvim_set_current_win(doc_win)
+  if valid_win(session.doc_win) then
+    vim.api.nvim_set_current_win(session.doc_win)
+  end
+end
 
-  vim.notify(
-    "Word Vim Style UI: Space+w+s closes both panels",
-    vim.log.levels.INFO
-  )
+local function target_doc_buf_from_current()
+  local buf = vim.api.nvim_get_current_buf()
+  local session = get_session_by_any_buffer(buf)
+  if session then
+    return session.doc_buf
+  end
+
+  if is_docx_buffer(buf) then
+    return buf
+  end
+
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    local candidate = vim.api.nvim_win_get_buf(win)
+    if is_docx_buffer(candidate) then
+      return candidate
+    end
+  end
+
+  return nil
 end
 
 function M.toggle()
@@ -1057,24 +1171,71 @@ function M.toggle()
   )
 end
 
+function M.toggle_left()
+  local doc_buf = target_doc_buf_from_current()
+  if not doc_buf then
+    vim.notify("Word Vim: no visible DOCX document", vim.log.levels.WARN)
+    return
+  end
+
+  local session = sessions[doc_buf]
+  if session and valid_win(session.left_win) then
+    M.close_side(doc_buf, "left")
+    if session and valid_win(session.doc_win) then
+      vim.api.nvim_set_current_win(session.doc_win)
+    end
+  else
+    M.open(doc_buf, "left")
+  end
+end
+
+function M.toggle_right()
+  local doc_buf = target_doc_buf_from_current()
+  if not doc_buf then
+    vim.notify("Word Vim: no visible DOCX document", vim.log.levels.WARN)
+    return
+  end
+
+  local session = sessions[doc_buf]
+  if session and valid_win(session.right_win) then
+    M.close_side(doc_buf, "right")
+    if session and valid_win(session.doc_win) then
+      vim.api.nvim_set_current_win(session.doc_win)
+    end
+  else
+    M.open(doc_buf, "right")
+  end
+end
+
 -- ------------------------------------------------------------
 -- Setup
 -- ------------------------------------------------------------
 
 
 function M.attach(buf)
-  vim.keymap.set(
-    "n",
-    "<leader>ws",
-    function()
-      M.toggle()
-    end,
-    {
-      buffer = buf,
-      silent = true,
-      desc = "Word Vim: toggle style UI",
-    }
-  )
+  vim.keymap.set("n", "<leader>ws", function()
+    M.toggle()
+  end, {
+    buffer = buf,
+    silent = true,
+    desc = "Word Vim: toggle both style panels",
+  })
+
+  vim.keymap.set("n", "<leader>wl", function()
+    M.toggle_left()
+  end, {
+    buffer = buf,
+    silent = true,
+    desc = "Word Vim: toggle left style gutter",
+  })
+
+  vim.keymap.set("n", "<leader>wr", function()
+    M.toggle_right()
+  end, {
+    buffer = buf,
+    silent = true,
+    desc = "Word Vim: toggle right style list",
+  })
 end
 
 function M.setup()
@@ -1119,10 +1280,96 @@ function M.setup()
     }
   )
 
+  vim.api.nvim_create_user_command(
+    "WordStyleUILeft",
+    function()
+      M.toggle_left()
+    end,
+    { desc = "Toggle Word Vim left style gutter" }
+  )
+
+  vim.api.nvim_create_user_command(
+    "WordStyleUIRight",
+    function()
+      M.toggle_right()
+    end,
+    { desc = "Toggle Word Vim right style list" }
+  )
+
+  vim.api.nvim_create_user_command(
+    "WordStyleWidth",
+    function(opts)
+      local value = tonumber(opts.args)
+      if not value then
+        vim.notify("Word Vim: right style width = " .. right_width(), vim.log.levels.INFO)
+        return
+      end
+
+      vim.g.wordvim_style_right_width = math.max(20, value)
+      local session = get_session_by_any_buffer(vim.api.nvim_get_current_buf())
+      if session and valid_win(session.right_win) then
+        pcall(vim.api.nvim_win_set_width, session.right_win, right_width())
+      end
+    end,
+    { nargs = "?", desc = "Get/set Word Vim right style panel width" }
+  )
+
+  vim.api.nvim_create_user_command(
+    "WordStyleGutterWidth",
+    function(opts)
+      local value = tonumber(opts.args)
+      if not value then
+        vim.notify("Word Vim: left style gutter width = " .. left_width(), vim.log.levels.INFO)
+        return
+      end
+
+      vim.g.wordvim_style_left_width = math.max(3, value)
+      local session = get_session_by_any_buffer(vim.api.nvim_get_current_buf())
+      if session and valid_win(session.left_win) then
+        pcall(vim.api.nvim_win_set_width, session.left_win, left_width())
+      end
+    end,
+    { nargs = "?", desc = "Get/set Word Vim left style gutter width" }
+  )
+
   local group = vim.api.nvim_create_augroup(
     "WordVimStyleUI",
     { clear = true }
   )
+
+  -- If :q / :wq / :x is executed from the DOCX window, close both
+  -- auxiliary style windows first so they never keep Neovim alive by
+  -- themselves.  The actual quit command then continues normally.
+  vim.api.nvim_create_autocmd("QuitPre", {
+    group = group,
+    callback = function(args)
+      local session = sessions[args.buf]
+      if session then
+        M.close(args.buf)
+      end
+    end,
+  })
+
+  -- If a side window is closed with :q instead of the q mapping, clean up
+  -- stale session references after Neovim finishes closing that window.
+  vim.api.nvim_create_autocmd("WinClosed", {
+    group = group,
+    callback = function()
+      vim.schedule(function()
+        for _, session in pairs(sessions) do
+          if session.left_win and not valid_win(session.left_win) then
+            session.left_win = nil
+            session.left_buf = nil
+          end
+          if session.right_win and not valid_win(session.right_win) then
+            session.right_win = nil
+            session.right_buf = nil
+          end
+          cleanup_session_if_empty(session)
+        end
+      end)
+    end,
+  })
 
   vim.api.nvim_create_autocmd(
     {

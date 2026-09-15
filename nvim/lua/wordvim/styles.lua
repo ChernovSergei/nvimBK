@@ -20,6 +20,58 @@ local namespace = vim.api.nvim_create_namespace("WordVimParagraphStyles")
 -- }
 local state = {}
 
+-- ============================================================
+-- Built-in Word Vim style catalog (v6.34)
+--
+-- Existing DOCX styles ALWAYS win. These definitions are only
+-- fallbacks for styles missing from word/styles.xml. A fallback
+-- is written into the document only when the user actually applies
+-- it. Text color is deliberately black for every Word Vim style.
+-- ============================================================
+
+local BUILTIN_STYLES = {
+  { name = "Normal", id = "Normal", type = "paragraph", based_on = "", font = "Aptos", size = "12", bold = false, italic = false, underline = false, color = "000000", alignment = "left", before = "0", after = "8", quick_style = true },
+  { name = "No Spacing", id = "NoSpacing", type = "paragraph", based_on = "Normal", font = "Aptos", size = "12", bold = false, italic = false, underline = false, color = "000000", alignment = "left", before = "0", after = "0", quick_style = true },
+  { name = "Title", id = "Title", type = "paragraph", based_on = "Normal", font = "Aptos Display", size = "28", bold = false, italic = false, underline = false, color = "000000", alignment = "left", before = "0", after = "8", quick_style = true },
+  { name = "Subtitle", id = "Subtitle", type = "paragraph", based_on = "Normal", font = "Aptos", size = "14", bold = false, italic = true, underline = false, color = "000000", alignment = "left", before = "0", after = "8", quick_style = true },
+  { name = "Heading 1", id = "Heading1", type = "paragraph", based_on = "Normal", font = "Aptos Display", size = "20", bold = true, italic = false, underline = false, color = "000000", alignment = "left", before = "18", after = "6", outline_level = "0", quick_style = true },
+  { name = "Heading 2", id = "Heading2", type = "paragraph", based_on = "Normal", font = "Aptos Display", size = "16", bold = true, italic = false, underline = false, color = "000000", alignment = "left", before = "12", after = "6", outline_level = "1", quick_style = true },
+  { name = "Heading 3", id = "Heading3", type = "paragraph", based_on = "Normal", font = "Aptos Display", size = "14", bold = true, italic = false, underline = false, color = "000000", alignment = "left", before = "12", after = "4", outline_level = "2", quick_style = true },
+  { name = "Heading 4", id = "Heading4", type = "paragraph", based_on = "Normal", font = "Aptos", size = "12", bold = true, italic = true, underline = false, color = "000000", alignment = "left", before = "10", after = "4", outline_level = "3", quick_style = true },
+  { name = "Heading 5", id = "Heading5", type = "paragraph", based_on = "Normal", font = "Aptos", size = "11", bold = true, italic = false, underline = false, color = "000000", alignment = "left", before = "8", after = "3", outline_level = "4", quick_style = true },
+  { name = "Heading 6", id = "Heading6", type = "paragraph", based_on = "Normal", font = "Aptos", size = "11", bold = false, italic = true, underline = false, color = "000000", alignment = "left", before = "8", after = "3", outline_level = "5", quick_style = true },
+  { name = "Heading 7", id = "Heading7", type = "paragraph", based_on = "Normal", font = "Aptos", size = "10", bold = true, italic = false, underline = false, color = "000000", alignment = "left", before = "6", after = "2", outline_level = "6", quick_style = true },
+  { name = "Heading 8", id = "Heading8", type = "paragraph", based_on = "Normal", font = "Aptos", size = "10", bold = false, italic = true, underline = false, color = "000000", alignment = "left", before = "6", after = "2", outline_level = "7", quick_style = true },
+  { name = "Heading 9", id = "Heading9", type = "paragraph", based_on = "Normal", font = "Aptos", size = "10", bold = false, italic = false, underline = false, color = "000000", alignment = "left", before = "6", after = "2", outline_level = "8", quick_style = true },
+  { name = "Body Text", id = "BodyText", type = "paragraph", based_on = "Normal", font = "Aptos", size = "12", bold = false, italic = false, underline = false, color = "000000", alignment = "left", before = "0", after = "6", quick_style = false },
+  { name = "List Paragraph", id = "ListParagraph", type = "paragraph", based_on = "Normal", font = "Aptos", size = "12", bold = false, italic = false, underline = false, color = "000000", alignment = "left", before = "0", after = "0", quick_style = true },
+  { name = "Quote", id = "Quote", type = "paragraph", based_on = "Normal", font = "Aptos", size = "11", bold = false, italic = true, underline = false, color = "000000", alignment = "left", before = "6", after = "6", quick_style = true },
+  { name = "Intense Quote", id = "IntenseQuote", type = "paragraph", based_on = "Normal", font = "Aptos", size = "11", bold = true, italic = true, underline = false, color = "000000", alignment = "left", before = "8", after = "8", quick_style = true },
+  { name = "Caption", id = "Caption", type = "paragraph", based_on = "Normal", font = "Aptos", size = "9", bold = false, italic = true, underline = false, color = "000000", alignment = "left", before = "0", after = "6", quick_style = true },
+  { name = "TOC Heading", id = "TOCHeading", type = "paragraph", based_on = "Heading 1", font = "Aptos Display", size = "16", bold = true, italic = false, underline = false, color = "000000", alignment = "left", before = "12", after = "6", quick_style = true },
+}
+
+local function clone_style(style)
+  local copy = {}
+  for k, v in pairs(style) do
+    copy[k] = v
+  end
+  return copy
+end
+
+local function find_builtin_style(name)
+  if not name then
+    return nil
+  end
+  local needle = tostring(name):lower()
+  for _, style in ipairs(BUILTIN_STYLES) do
+    if style.name:lower() == needle then
+      return style
+    end
+  end
+  return nil
+end
+
 local function get_state(buf)
   if not state[buf] then
     state[buf] = {
@@ -40,9 +92,33 @@ function M.reset_buffer(buf)
   vim.api.nvim_buf_clear_namespace(buf, namespace, 0, -1)
 end
 
-function M.set_cached_styles(buf, styles)
+function M.set_cached_styles(buf, cached)
   local s = get_state(buf)
-  s.styles = styles or {}
+  local result = {}
+  local seen_id = {}
+  local seen_name = {}
+
+  for _, style in ipairs(cached or {}) do
+    local id_key = tostring(style.id or ""):lower()
+    local name_key = tostring(style.type or ""):lower()
+      .. "|"
+      .. tostring(style.name or ""):lower():gsub("%s+", " ")
+
+    if
+      (id_key == "" or not seen_id[id_key])
+      and (name_key == "|" or not seen_name[name_key])
+    then
+      table.insert(result, style)
+      if id_key ~= "" then
+        seen_id[id_key] = true
+      end
+      if name_key ~= "|" then
+        seen_name[name_key] = true
+      end
+    end
+  end
+
+  s.styles = result
 end
 
 function M.get_cached_styles(buf)
@@ -286,14 +362,104 @@ end
 
 function M.get_paragraph_styles(buf)
   local result = {}
+  local seen = {}
 
+  local function visible_style_key(name)
+    return vim.trim(tostring(name or "")):lower():gsub("%s+", " ")
+  end
+
+  -- Styles physically present in the DOCX come first and always win.
+  -- Some Word/Pandoc round-trips can leave two paragraph-style records with
+  -- the same display name but different internal IDs.  Showing both is
+  -- confusing and can make Heading 1/2 appear duplicated in the panel.
+  -- Keep the first document definition for each visible name.
   for _, style in ipairs(get_state(buf).styles) do
-    if style.type == "paragraph" then
-      table.insert(result, style)
+    if style.type == "paragraph" and style.name then
+      local key = visible_style_key(style.name)
+      if not seen[key] then
+        table.insert(result, style)
+        seen[key] = true
+      end
+    end
+  end
+
+  -- Add missing Word Vim defaults only to the UI/catalog. They are NOT
+  -- injected into styles.xml until the user applies one.
+  for _, builtin in ipairs(BUILTIN_STYLES) do
+    if builtin.type == "paragraph" and not seen[visible_style_key(builtin.name)] then
+      local copy = clone_style(builtin)
+      copy.wordvim_builtin = true
+      table.insert(result, copy)
     end
   end
 
   return result
+end
+
+function M.find_available_style(buf, name)
+  return find_style(buf, name) or find_builtin_style(name)
+end
+
+function M.materialize_builtin_style(buf, name)
+  local existing = find_style(buf, name)
+  if existing then
+    return existing, false
+  end
+
+  local builtin = find_builtin_style(name)
+  if not builtin then
+    return nil, false
+  end
+
+  -- Materialize a missing built-in parent first so w:basedOn always points
+  -- to a real styleId rather than a display name. Existing document styles
+  -- still take priority and are never rewritten by this step.
+  if builtin.based_on and builtin.based_on ~= "" then
+    if not find_style(buf, builtin.based_on) and find_builtin_style(builtin.based_on) then
+      M.materialize_builtin_style(buf, builtin.based_on)
+    end
+  end
+
+  local style = clone_style(builtin)
+  style.wordvim_builtin = nil
+  table.insert(get_state(buf).styles, style)
+
+  local spec = clone_style(style)
+  spec.bold = style.bold == true or style.bold == "yes"
+  spec.italic = style.italic == true or style.italic == "yes"
+  spec.underline = style.underline == true or style.underline == "yes"
+  get_state(buf).style_changes[style.id] = spec
+
+  vim.bo[buf].modified = true
+  return style, true
+end
+
+function M.ensure_referenced_builtin_styles(buf)
+  if not vim.api.nvim_buf_is_valid(buf) then
+    return
+  end
+
+  local needed = {}
+  for _, style_name in pairs(M.get_style_map(buf)) do
+    needed[tostring(style_name):lower()] = style_name
+  end
+
+  -- Headings can intentionally have no hidden style marker because their
+  -- Markdown # prefix already carries the semantic heading level. Ensure the
+  -- corresponding Word style exists before Pandoc uses the reference DOCX.
+  for _, line in ipairs(vim.api.nvim_buf_get_lines(buf, 0, -1, false)) do
+    local hashes = tostring(line):match("^(#+)%s+")
+    if hashes and #hashes >= 1 and #hashes <= 9 then
+      local name = "Heading " .. #hashes
+      needed[name:lower()] = name
+    end
+  end
+
+  for _, style_name in pairs(needed) do
+    if not find_style(buf, style_name) and find_builtin_style(style_name) then
+      M.materialize_builtin_style(buf, style_name)
+    end
+  end
 end
 
 function M.apply_style_to_row(buf, row, style_name)
@@ -302,6 +468,10 @@ function M.apply_style_to_row(buf, row, style_name)
   end
 
   local style = find_style(buf, style_name)
+
+  if not style then
+    style = M.materialize_builtin_style(buf, style_name)
+  end
 
   if not style then
     vim.notify(
@@ -577,10 +747,8 @@ end
 
 local function paragraph_style_candidates(buf)
   local result = {}
-  for _, style in ipairs(get_state(buf).styles) do
-    if style.type == "paragraph" then
-      table.insert(result, style)
-    end
+  for _, style in ipairs(M.get_paragraph_styles(buf)) do
+    table.insert(result, style)
   end
 
   table.sort(result, function(a, b)
@@ -680,6 +848,9 @@ function M.setup()
     if name ~= "" then
       local style = find_style(buf, name)
       if not style then
+        style = M.materialize_builtin_style(buf, name)
+      end
+      if not style then
         vim.notify("Word Vim: style not found: " .. name, vim.log.levels.ERROR)
         return
       end
@@ -696,7 +867,13 @@ function M.setup()
       end,
     }, function(choice)
       if choice then
-        edit_style(choice)
+        local style = find_style(buf, choice.name)
+        if not style then
+          style = M.materialize_builtin_style(buf, choice.name)
+        end
+        if style then
+          edit_style(style)
+        end
       end
     end)
   end, { nargs = "*" })
@@ -710,8 +887,11 @@ function M.setup()
       return
     end
 
-    if find_style(buf, name) then
-      vim.notify("Word Vim: style already exists", vim.log.levels.ERROR)
+    if find_style(buf, name) or find_builtin_style(name) then
+      vim.notify(
+        "Word Vim: style already exists or is available in the standard catalog",
+        vim.log.levels.ERROR
+      )
       return
     end
 

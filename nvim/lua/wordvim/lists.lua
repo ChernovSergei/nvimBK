@@ -66,7 +66,7 @@ end
 
 local function parse_editor_ordered(line)
   local indent, label, body =
-    tostring(line or ""):match("^(%s*)(%d[%d%.]*)%s+(.+)$")
+    tostring(line or ""):match("^(%s*)(%d[%d%.]*)%s+(.*)$")
 
   if not label then
     return nil
@@ -97,7 +97,7 @@ local function parse_editor_bullet(line)
 
     local indent, body =
       line:match(
-        "^(%s*)" .. escaped .. "%s+(.+)$"
+        "^(%s*)" .. escaped .. "%s+(.*)$"
       )
 
     if body then
@@ -117,7 +117,7 @@ local function parse_markdown_list(line)
   line = tostring(line or "")
 
   local indent, number, body =
-    line:match("^(%s*)(%d+)[%.%)]%s+(.+)$")
+    line:match("^(%s*)(%d+)[%.%)]%s+(.*)$")
 
   if number then
     return {
@@ -129,7 +129,7 @@ local function parse_markdown_list(line)
   end
 
   local bindent, marker, bbody =
-    line:match("^(%s*)([-+*])%s+(.+)$")
+    line:match("^(%s*)([-+*])%s+(.*)$")
 
   if marker then
     return {
@@ -164,6 +164,48 @@ local function editor_prefix(kind, level, label)
 
   return indent .. (label or ordered_label(level)) .. " "
 end
+
+
+-- Return the editor prefix for a list line. Used by paragraph handling to
+-- continue a list when Enter is pressed at the end of an item.
+function M.continuation_prefix(line)
+  local item = M.parse(line)
+  if not item then
+    return nil, nil
+  end
+
+  if item.kind == "bullet" then
+    return editor_prefix("bullet", item.level), item
+  end
+
+  return editor_prefix("ordered", item.level, ordered_label(item.level)), item
+end
+
+-- Explicitly leave list formatting on the current paragraph. This is useful
+-- when the user wants to stop a list without relying on an empty list item.
+function M.exit_current()
+  local buf = vim.api.nvim_get_current_buf()
+  local row = vim.api.nvim_win_get_cursor(0)[1] - 1
+  local line = vim.api.nvim_get_current_line()
+  local item = M.parse(line)
+
+  if not item then
+    vim.notify("Word Vim: current paragraph is not a list item", vim.log.levels.INFO)
+    return false
+  end
+
+  vim.api.nvim_set_current_line(item.body or "")
+  M.renumber_buffer(buf)
+
+  local ok, word_styles = pcall(require, "wordvim.styles")
+  if ok then
+    word_styles.set_paragraph_style(buf, row, "Normal")
+  end
+
+  vim.bo[buf].modified = true
+  return true
+end
+
 
 -- ------------------------------------------------------------
 -- Convert Pandoc Markdown list markers into Word Vim display.

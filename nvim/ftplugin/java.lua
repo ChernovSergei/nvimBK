@@ -1,81 +1,25 @@
-local jdtls = require("jdtls")
-local capabilities = require("cmp_nvim_lsp").default_capabilities()
-
--- ===== Paths =====
-local jdtls_path = vim.fn.stdpath("data") .. "/mason/packages/jdtls"
-local launcher = vim.fn.glob(jdtls_path .. "/plugins/org.eclipse.equinox.launcher_*.jar")
-
-local config = jdtls_path .. "/config_linux"
-if vim.fn.isdirectory(config) == 0 then
-  config = jdtls_path .. "/config_linux_arm"
+local java = require('plugins.java')
+local bufnr = vim.api.nvim_get_current_buf()
+java.setup_buffer(bufnr)
+local function start()
+  local root = require('jdtls.setup').find_root({
+    'mvnw', 'gradlew', 'pom.xml', 'build.gradle', 'build.gradle.kts',
+    'settings.gradle', 'settings.gradle.kts', '.git',
+  })
+  root = root or vim.fs.dirname(vim.api.nvim_buf_get_name(bufnr))
+  if not root or root == '' then error('Save the Java file before starting JDTLS') end
+  local config, err = require('plugins.java_launch').build(root)
+  if not config then error(err) end
+  config.capabilities = require('cmp_nvim_lsp').default_capabilities()
+  config.on_attach = java.on_attach
+  require('jdtls').start_or_attach(config)
 end
-
--- ===== Root detection =====
-local root_dir = require("jdtls.setup").find_root({
-  ".git",
-  "mvnw",
-  "gradlew",
-  "pom.xml",
-  "build.gradle",
-})
-
-if not root_dir then
-  return
+local ok, err = pcall(start)
+if not ok then
+  vim.b[bufnr].wordvim_java_error = tostring(err)
+  -- ERROR notifications inside FileType can propagate through :edit/Neo-tree.
+  -- Report after opening the buffer; keep the failure available in status.
+  vim.schedule(function()
+    vim.notify('WordVim Java: ' .. tostring(err), vim.log.levels.WARN)
+  end)
 end
-
-local project_name = vim.fn.fnamemodify(root_dir, ":p:h:t")
-local workspace_dir = vim.fn.stdpath("data") .. "/jdtls-workspace/" .. project_name
-
--- ===== Command =====
-local cmd = {
-  "java",
-  "-Declipse.application=org.eclipse.jdt.ls.core.id1",
-  "-Dosgi.bundles.defaultStartLevel=4",
-  "-Declipse.product=org.eclipse.jdt.ls.core.product",
-  "-Dlog.protocol=true",
-  "-Dlog.level=ALL",
-  "-Xms1g",
-  "--add-modules=ALL-SYSTEM",
-  "--add-opens", "java.base/java.util=ALL-UNNAMED",
-  "--add-opens", "java.base/java.lang=ALL-UNNAMED",
-  "-jar", launcher,
-  "-configuration", config,
-  "-data", workspace_dir,
-}
-
--- ===== Debug / Test =====
-local bundles = {
-  vim.fn.glob(
-    vim.fn.stdpath("data")
-      .. "/mason/packages/java-debug-adapter/extension/server/com.microsoft.java.debug.plugin-*.jar"
-  ),
-}
-
-vim.list_extend(
-  bundles,
-  vim.split(
-    vim.fn.glob(
-      vim.fn.stdpath("data")
-        .. "/mason/packages/java-test/extension/server/*.jar"
-    ),
-    "\n"
-  )
-)
-
--- ===== Start jdtls =====
-jdtls.start_or_attach({
-  cmd = cmd,
-  root_dir = root_dir,
-  capabilities = capabilities,
-  on_attach = require("plugins.java").on_attach,
-  settings = {
-    java = {
-      signatureHelp = { enabled = true },
-      contentProvider = { preferred = "fernflower" },
-      format = { enabled = true },
-    },
-  },
-  init_options = {
-    bundles = bundles,
-  },
-})

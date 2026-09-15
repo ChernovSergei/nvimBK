@@ -84,15 +84,7 @@ local function ps_escape(value)
 end
 
 local function run_powershell(script)
-  local output = vim.fn.system({
-    "powershell",
-    "-NoProfile",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-Command",
-    script,
-  })
-  return vim.v.shell_error == 0, output
+  return require("wordvim.runtime").run_powershell(script)
 end
 
 local function twips_to_cm(value)

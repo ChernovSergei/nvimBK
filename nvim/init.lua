@@ -1,3 +1,6 @@
+vim.g.mapleader = " "
+vim.g.maplocalleader = " "
+
 -- Keep Neovim ZIP support for normal archives, but do not let
 -- the built-in zipPlugin claim .docx files. Word Vim owns *.docx.
 vim.g.zipPlugin_ext = table.concat({

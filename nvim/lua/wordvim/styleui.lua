@@ -176,7 +176,7 @@ end
 
 -- ------------------------------------------------------------
 -- Colors
--- Generate a deterministic unique hue from the style number.
+-- Generate a stable application hue from the style name.
 -- ------------------------------------------------------------
 
 local function hue_to_rgb(p, q, t)
@@ -249,13 +249,14 @@ end
 local function ensure_highlights(session)
   session.highlights = {}
 
-  for number, _ in ipairs(session.style_order) do
-    -- Golden-angle distribution gives stable, well-separated hues.
-    local hue = ((number - 1) * 137.508) % 360
-    local bg = hsl_to_hex(hue, 58, 34)
+  for number, name in ipairs(session.style_order) do
+    -- A style keeps its application color regardless of document ordering.
+    local hue = require("wordvim.panelcolors").hue(name)
+    local chosen = require("wordvim.panelcolors").get(session.doc_buf, name)
+    local bg = chosen ~= "" and ("#" .. chosen) or hsl_to_hex(hue, 58, 34)
     local fg = luminance(bg) > 0.45 and "#101010" or "#FFFFFF"
 
-    local group = "WordVimStyleColor" .. tostring(number)
+    local group = "WordVimStyleColor" .. tostring(session.doc_buf) .. "_" .. tostring(number)
 
     vim.api.nvim_set_hl(0, group, {
       fg = fg,
@@ -1509,6 +1510,20 @@ function M.setup()
       end,
     }
   )
+
+  vim.api.nvim_create_autocmd("User", {
+    group = group, pattern = "WordVimPanelColorsChanged",
+    callback = function()
+      for _, session in pairs(sessions) do refresh(session) end
+    end,
+  })
+  vim.api.nvim_create_autocmd("FocusGained", {
+    group = group,
+    callback = function()
+      require("wordvim.panelcolors").invalidate()
+      for _, session in pairs(sessions) do refresh(session) end
+    end,
+  })
 
   vim.api.nvim_create_autocmd(
     "BufWipeout",

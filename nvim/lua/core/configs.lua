@@ -13,7 +13,7 @@ vim.opt.scrolloff = 8
 vim.wo.linebreak = true
 vim.opt.virtualedit = "block"
 vim.opt.undofile = true
-vim.opt.shell = vim.fn.executable("zsh") == 1 and "/bin/zsh" or "/bin/bash"
+require("core.platform").setup()
 
 --Mouse
 vim.opt.mouse = "a"
@@ -42,7 +42,9 @@ vim.opt.softtabstop = 4
 vim.opt.smartindent = true
 
 vim.opt.showtabline = 2
-vim.api.nvim_create_user_command('Copy', "w !xclip -selection clipboard", {})
+vim.api.nvim_create_user_command("Copy", function()
+  vim.fn.setreg("+", vim.api.nvim_buf_get_lines(0, 0, -1, false), "V")
+end, {desc="Copy buffer text to the system clipboard"})
 --Fillchars
 --vim.opt.fillchars = {
 --	vert = "|",
@@ -53,3 +55,5 @@ vim.api.nvim_create_user_command('Copy', "w !xclip -selection clipboard", {})
 --	foldsep = "|",
 --	foldclose = ">"
 --}
+
+require('core.tablabels').setup()

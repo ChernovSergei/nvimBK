@@ -1,28 +1,16 @@
-require('nvim-treesitter').setup {
-  ensure_installed = {
-      "lua",
-      "java",
-      "html",
-      "css",
-      "javascript",
-      "typescript",
-      "tsx",
-      "json",
-      "bash",
-      "yaml",
-      "markdown"
-  },
-
-  sync_install = false,
-  auto_install = true,
-  highlight = {
-    enable = true,
-    disable = {}
---    disable = {"html", "css", "javascript", "tsx"}
-  },
-}
---require'nvim-treesitter'.setup {
-  -- Directory to install parsers and queries to (prepended to `runtimepath` to have priority)
---  install_dir = vim.fn.stdpath('data') .. '/site'
---}
---require('nvim-treesitter').install({ 'rust', 'javascript', 'zig' }):wait(300000) -- wait max. 5 minutes
+local languages={'lua','java','html','css','javascript','typescript','tsx','json','bash','yaml','markdown','markdown_inline'}
+if vim.fn.has('nvim-0.12')==1 then
+  local ts=require('nvim-treesitter')
+  ts.setup({})
+  ts.install(languages)
+  local group=vim.api.nvim_create_augroup('WordVimTreesitter',{clear=true})
+  vim.api.nvim_create_autocmd('FileType',{group=group,callback=function(args)
+    -- Parsers may still be downloading on the first launch.
+    pcall(vim.treesitter.start,args.buf)
+  end})
+else
+  require('nvim-treesitter.configs').setup({
+    ensure_installed=languages,sync_install=false,auto_install=true,
+    highlight={enable=true},
+  })
+end

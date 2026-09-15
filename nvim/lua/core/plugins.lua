@@ -33,6 +33,8 @@ require("lazy").setup({
 	},
 	{
 	  'nvim-treesitter/nvim-treesitter',
+      branch = vim.fn.has('nvim-0.12') == 1 and 'main' or 'master',
+      lazy = false,
 	  --version = "v0.9.2",
 	  build = ':TSUpdate',
 	},
@@ -116,3 +118,4 @@ require("lazy").setup({
         "stevearc/conform.nvim",
     }
 })
+

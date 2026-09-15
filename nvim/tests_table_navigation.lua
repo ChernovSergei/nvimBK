@@ -60,10 +60,8 @@ end
 io.stderr:write('PASS complete help at 160/80/48 columns and cursor alignment\n')
 
 assert(type(maps['?'])=='function' and maps['?']==maps['<F1>'],'help bindings missing')
-maps['?']()
-local help=table.concat(bufs[2],'\n')
-for _,label in ipairs({'delete selected row','delete column','delete existing table','without applying','Save the DOCX'})do
- assert(help:find(label,1,true),'missing help action '..label)
-end
-assert(vim.wo[2].wrap==true,'help must wrap')
-io.stderr:write('PASS separate help content and bindings\n')
+local calls=0
+package.loaded['wordvim.help']={open=function() calls=calls+1 end}
+maps['?']();maps['<F1>']()
+assert(calls==2,'table help must delegate to global help')
+io.stderr:write('PASS table help delegates to shared help module\n')

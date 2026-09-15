@@ -126,6 +126,8 @@ local function utf16_buffer(ffi, text)
 end
 
 local function switch_windows_layout_powershell(spec)
+  local shell = require("wordvim.runtime").powershell()
+  if not shell then return end
   local script = string.format([[
 $ErrorActionPreference = 'Stop'
 Add-Type @'
@@ -147,9 +149,9 @@ if ($hkl -eq [IntPtr]::Zero -or $hwnd -eq [IntPtr]::Zero) { exit 2 }
 ]], spec.klid)
 
   if vim.system then
-    vim.system({ "powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script }, { text = true }, function() end)
+    vim.system({ shell, "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script }, { text = true }, function() end)
   else
-    vim.fn.jobstart({ "powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script }, { detach = true })
+    vim.fn.jobstart({ shell, "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script }, { detach = true })
   end
 end
 
@@ -421,8 +423,8 @@ try {
 }
 ]], ps_single_quote(path))
 
-  local out = vim.fn.system({ "powershell", "-NoProfile", "-NonInteractive", "-Command", script })
-  if vim.v.shell_error ~= 0 then
+  local ok, out = require("wordvim.runtime").run_powershell(script)
+  if not ok then
     return nil
   end
 
@@ -558,8 +560,8 @@ Update-XmlPart 'word/styles.xml' {
 }
 ]], ps_single_quote(path), ps_single_quote(spec.word))
 
-  local out = vim.fn.system({ "powershell", "-NoProfile", "-NonInteractive", "-Command", script })
-  if vim.v.shell_error ~= 0 then
+  local ok, out = require("wordvim.runtime").run_powershell(script)
+  if not ok then
     vim.notify("Word Vim language: failed to write DOCX w:lang:\n" .. tostring(out), vim.log.levels.ERROR)
     return false
   end

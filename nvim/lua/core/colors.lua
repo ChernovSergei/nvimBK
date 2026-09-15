@@ -1,17 +1,4 @@
 vim.opt.termguicolors = true
-
---color = color or "onedark"
---vim.cmd.colorscheme(color)
-require("tokyonight").setup({
-    style = "storm",
-})
-
-vim.cmd.colorscheme("tokyonight")
-
-vim.schedule(function()
-	vim.api.nvim_set_hl(0, "Normal", {bg = "#120E27"})
-	vim.api.nvim_set_hl(0, "NormalFloat", {bg = "#0E0A23"})
-	vim.api.nvim_set_hl(0, "ColorColumn", {bg = "none"})
-	vim.api.nvim_set_hl(0, "LineNr", {bg = "none"})
-	vim.api.nvim_set_hl(0, "SignColumn", {bg = "none"})
-end)
+require('tokyonight').setup({style='storm'})
+vim.cmd.colorscheme('tokyonight')
+require('core.idea_colors').setup()

@@ -622,16 +622,7 @@ local function ps_escape_local(value)
 end
 
 local function run_powershell_local(script)
-  local output = vim.fn.system({
-    "powershell",
-    "-NoProfile",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-Command",
-    script,
-  })
-
-  return vim.v.shell_error == 0, output
+  return require("wordvim.runtime").run_powershell(script)
 end
 
 function M.load_levels_from_docx(buf, docx)
@@ -967,16 +958,7 @@ local function ps_escape(value)
 end
 
 local function run_powershell(script)
-  local output = vim.fn.system({
-    "powershell",
-    "-NoProfile",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-Command",
-    script,
-  })
-
-  return vim.v.shell_error == 0, output
+  return require("wordvim.runtime").run_powershell(script)
 end
 
 local function normalize_docx_match_text(text)

@@ -25,6 +25,8 @@ require("neo-tree").setup({
   filesystem = {
     window = {
       mappings = {
+        ["zO"] = "expand_all_subnodes",
+        ["zM"] = "close_all_nodes",
         ["<CR>"] = function(state)
           local images = wordvim_images()
           if images and images.neotree_select_node and images.neotree_select_node(state) then
@@ -56,3 +58,4 @@ require("neo-tree").setup({
     },
   },
 })
+

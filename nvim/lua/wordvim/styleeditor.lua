@@ -33,6 +33,7 @@ local FIELD_ROWS = {
   alignment = 12,
   before = 13,
   after = 14,
+  panel_color = 15,
 }
 
 local function valid_buf(buf)
@@ -101,7 +102,7 @@ local function render(style)
     field_line("Alignment", style.alignment or ""),
     field_line("Space before pt", style.before or ""),
     field_line("Space after pt", style.after or ""),
-    "",
+    field_line("Panel color HEX", style.panel_color or ""),
     " Ctrl+S = Save     q / Esc = Cancel ",
     " Values may be blank to inherit/remove direct style property. ",
   }
@@ -158,6 +159,7 @@ local function parse_fields(buf)
     alignment = value_from_line(at(FIELD_ROWS.alignment)),
     before = value_from_line(at(FIELD_ROWS.before)),
     after = value_from_line(at(FIELD_ROWS.after)),
+    panel_color = value_from_line(at(FIELD_ROWS.panel_color)),
   }
 end
 
@@ -168,20 +170,34 @@ local function save()
 
   local values = parse_fields(active.buf)
 
-  local ok, err = styles.update_style_definition(
-    active.doc_buf,
-    active.style_name,
-    values
-  )
-
-  if not ok then
-    vim.notify(
-      "Word Vim: style settings were not saved:\n" .. tostring(err),
-      vim.log.levels.ERROR
-    )
+  local panel = vim.trim(values.panel_color):gsub("^#", "")
+  if panel ~= "" and not panel:match("^%x%x%x%x%x%x$") then
+    vim.notify("Panel color: use six HEX digits or blank", vim.log.levels.ERROR)
     return
   end
+  local document_changed = false
+  for field,value in pairs(values) do
+    if field ~= "panel_color" and value ~= active.initial_values[field] then
+      document_changed = true
+    end
+  end
+  if document_changed then
+    local ok, err = styles.update_style_definition(active.doc_buf, active.style_name, values)
+    if not ok then
+      vim.notify("Word Vim: style settings were not saved:\n" .. tostring(err), vim.log.levels.ERROR)
+      return
+    end
+  end
 
+  local saved, panel_err = require("wordvim.panelcolors").set(active.doc_buf, active.style_name, panel)
+  if not saved then
+    vim.notify("Panel color was not saved: " .. tostring(panel_err), vim.log.levels.ERROR)
+    return
+  end
+  vim.api.nvim_exec_autocmds("User", {
+    pattern = "WordVimStyleDefinitionChanged", modeline = false,
+    data = {buf = active.doc_buf, style = active.style_name},
+  })
   local name = active.style_name
   local on_saved = active.on_saved
 
@@ -192,7 +208,8 @@ local function save()
   end
 
   vim.notify(
-    "Word Vim: style '" .. name .. "' changed. Use :w to save DOCX.",
+    document_changed and ("Word Vim: style '" .. name .. "' changed. Use :w to save DOCX.")
+      or ("Word Vim: application panel color saved for '" .. name .. "'."),
     vim.log.levels.INFO
   )
 end
@@ -206,8 +223,8 @@ local function keep_cursor_in_values(win)
 
   if row < FIELD_ROWS.based_on then
     vim.api.nvim_win_set_cursor(win, { FIELD_ROWS.based_on, 23 })
-  elseif row > FIELD_ROWS.after then
-    vim.api.nvim_win_set_cursor(win, { FIELD_ROWS.after, 23 })
+  elseif row > FIELD_ROWS.panel_color then
+    vim.api.nvim_win_set_cursor(win, { FIELD_ROWS.panel_color, 23 })
   end
 end
 
@@ -225,6 +242,9 @@ function M.open(doc_buf, style_name, on_saved)
     )
     return
   end
+
+  style = vim.deepcopy(style)
+  style.panel_color = require("wordvim.panelcolors").get(doc_buf, style_name)
 
   local width = math.min(76, math.max(58, vim.o.columns - 10))
   local height = 17
@@ -268,6 +288,7 @@ function M.open(doc_buf, style_name, on_saved)
 
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, render(style))
   vim.bo[buf].modified = false
+  active.initial_values = parse_fields(buf)
 
   protect_prefixes(buf)
 
@@ -302,6 +323,21 @@ function M.open(doc_buf, style_name, on_saved)
   })
 
   vim.keymap.set("n", "<CR>", function()
+    if vim.api.nvim_win_get_cursor(win)[1] == FIELD_ROWS.panel_color then
+      local popup = active
+      local palette = {"Automatic", "1F4E79 Blue", "548235 Green", "C65911 Orange", "7030A0 Purple", "C00000 Red", "FFD966 Yellow", "404040 Gray", "Custom HEX"}
+      local function put(value)
+        if active ~= popup or not valid_buf(buf) then return end
+        vim.api.nvim_buf_set_lines(buf, FIELD_ROWS.panel_color-1, FIELD_ROWS.panel_color, false, {field_line("Panel color HEX", value)})
+      end
+      vim.ui.select(palette, {prompt="Application color (all documents):"}, function(choice)
+        if not choice then return end
+        if choice == "Custom HEX" then
+          vim.ui.input({prompt="HEX (blank = automatic): "}, function(value) if value then put(value) end end)
+        else put(choice == "Automatic" and "" or choice:sub(1,6)) end
+      end)
+      return
+    end
     vim.cmd("startinsert")
   end, {
     buffer = buf,

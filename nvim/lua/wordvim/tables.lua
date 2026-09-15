@@ -174,36 +174,7 @@ local function finish(s,save)
  if save then if s.item then replace_item(s.source,s.item,s.spec)else local r=vim.api.nvim_win_get_cursor(s.source_win)[1];local lines=display(s.spec);local st=state(s.source);st.updating=true;vim.api.nvim_buf_set_lines(s.source,r,r,false,lines);local it=attach(s.source,r,s.spec);st.updating=false end;vim.bo[s.source].modified=true end
  if vim.api.nvim_win_is_valid(s.win)then vim.api.nvim_win_close(s.win,true)end
 end
-local function show_help()
- local lines={
- "WORD VIM TABLE HELP", "",
- "hjkl / arrows - select a neighbouring cell",
- "w / Tab - next cell; b / Shift-Tab - previous cell",
- "Enter - edit selected cell text",
- "Space - set selection anchor; M - merge selection",
- "U - split selected merged cell",
- "S - cell style; B - cell borders; L - table borders",
- "H - number of header rows",
- "A - add row at end; D - delete selected row",
- "I - insert column after selection; X - delete column",
- "R - delete existing table (confirmation required)",
- "W - apply changes to document buffer and close editor",
- "q / Q - close editor without applying changes",
- "Save the DOCX separately with :w in the document.", "",
- "In document: Space w t - open/create table",
- "Close this help: q, Esc, ?, or F1"}
- local b=vim.api.nvim_create_buf(false,true)
- vim.bo[b].bufhidden="wipe"
- vim.api.nvim_buf_set_lines(b,0,-1,false,lines)
- vim.bo[b].modifiable=false
- local width=math.max(1,math.min(76,vim.o.columns-4))
- local height=math.max(1,math.min(#lines+2,vim.o.lines-vim.o.cmdheight-4))
- local win=vim.api.nvim_open_win(b,true,{relative="editor",row=1,col=math.max(0,math.floor((vim.o.columns-width)/2)),width=width,height=height,style="minimal",border="rounded",title=" Table help ",zindex=60})
- vim.wo[win].wrap=true
- for _,key in ipairs({"q","<Esc>","?","<F1>"})do
-  vim.keymap.set("n",key,function()if vim.api.nvim_win_is_valid(win)then vim.api.nvim_win_close(win,true)end end,{buffer=b,silent=true,nowait=true})
- end
-end
+local function show_help() require("wordvim.help").open() end
 local function open_editor(it,r,c)
  local source,sw=vim.api.nvim_get_current_buf(),vim.api.nvim_get_current_win();local spec=it and vim.deepcopy(it.spec)or newspec(r,c);local b=vim.api.nvim_create_buf(false,true);vim.bo[b].buftype="nofile";vim.bo[b].bufhidden="wipe";vim.bo[b].filetype="wordvim-table";local function geometry()
  return {relative="editor",row=0,col=0,width=math.max(1,vim.o.columns-2),height=math.max(1,vim.o.lines-vim.o.cmdheight-2),style="minimal",border="rounded",title=" Word Vim Table Editor ",title_pos="center"}
@@ -265,7 +236,6 @@ function M.open(r,c)local b=vim.api.nvim_get_current_buf();open_editor(current(b
 
 -- Apply table/header/cell border and fill metadata to Pandoc's DOCX.
 function M.apply_to_docx(docx)
- if vim.fn.has("win32")~=1 and vim.fn.has("win64")~=1 then return true end
  local path=tostring(docx):gsub("'","''")
  local ps=string.format([[
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -314,7 +284,7 @@ $legacyPart=$z.GetEntry('word/wordvimTables.xml');if($legacyPart){$legacyPart.De
 $docRels=$z.GetEntry('word/_rels/document.xml.rels');if($docRels){$dr=New-Object IO.StreamReader($docRels.Open());$dx=New-Object Xml.XmlDocument;$dx.PreserveWhitespace=$true;$dx.LoadXml($dr.ReadToEnd());$dr.Close();$changed=$false;foreach($oldRel in @($dx.DocumentElement.ChildNodes)){if($oldRel.GetAttribute('Target') -eq 'wordvimTables.xml'){[void]$dx.DocumentElement.RemoveChild($oldRel);$changed=$true}};if($changed){$docRels.Delete();$docRels=$z.CreateEntry('word/_rels/document.xml.rels');$dw=New-Object IO.StreamWriter($docRels.Open(),(New-Object Text.UTF8Encoding($false)));$dx.Save($dw);$dw.Close()}}
 ;$e.Delete();$e=$z.CreateEntry('word/document.xml');$w=New-Object IO.StreamWriter($e.Open(),(New-Object Text.UTF8Encoding($false)));$x.Save($w);$w.Close()}finally{$z.Dispose()}
 ]],path)
- local out=vim.fn.system({'powershell','-NoProfile','-ExecutionPolicy','Bypass','-Command',ps});return vim.v.shell_error==0,out
+ return require("wordvim.runtime").run_powershell(ps)
 end
 function M.setup()
  vim.keymap.set("n","<leader>wt",function()M.open()end,{silent=true,desc="Open Word table editor"})

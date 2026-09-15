@@ -36,16 +36,7 @@ local function ps_escape(value)
 end
 
 local function run_powershell(script)
-  local output = vim.fn.system({
-    "powershell",
-    "-NoProfile",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-Command",
-    script,
-  })
-
-  return vim.v.shell_error == 0, output
+  return require("wordvim.runtime").run_powershell(script)
 end
 
 local function escape_alt(text)
@@ -68,10 +59,8 @@ local image_extensions = {
   svg = true,
 }
 
--- System.Drawing can rotate these raster formats reliably on the Windows
--- versions Word Vim targets. WEBP and SVG can still be inserted into DOCX,
--- but rotation is blocked with a clear message instead of handing them to
--- System.Drawing and failing unpredictably.
+-- Conservative raster rotation formats shared by System.Drawing (Windows)
+-- and Pillow (Linux/proot). SVG can be inserted but is not a raster image.
 local rotatable_extensions = {
   png = true,
   jpg = true,
@@ -164,7 +153,7 @@ local function set_image_width(width)
     if line:match("width%s*=") then
       line = line:gsub(
         'width%s*=%s*[^%s}]+',
-        "width=" .. width,
+        function() return "width=" .. width end,
         1
       )
     else
@@ -374,47 +363,7 @@ local function rotate_image(angle)
     .. "."
     .. ext
 
-  local rotate_flip = ({
-    [90] = "Rotate90FlipNone",
-    [180] = "Rotate180FlipNone",
-    [270] = "Rotate270FlipNone",
-  })[angle]
-
-  local script = string.format([[
-Add-Type -AssemblyName System.Drawing
-
-$source = '%s'
-$target = '%s'
-
-$image = $null
-$clone = $null
-
-try {
-    $image = [System.Drawing.Image]::FromFile($source)
-    $clone = New-Object System.Drawing.Bitmap($image)
-
-    $clone.RotateFlip(
-      [System.Drawing.RotateFlipType]::%s
-    )
-
-    $clone.Save($target)
-}
-finally {
-    if ($null -ne $clone) {
-        $clone.Dispose()
-    }
-
-    if ($null -ne $image) {
-        $image.Dispose()
-    }
-}
-]],
-    ps_escape(source),
-    ps_escape(target),
-    rotate_flip
-  )
-
-  local ok, output = run_powershell(script)
+  local ok, output = require("wordvim.runtime").rotate_image(source, target, angle)
 
   if not ok or vim.fn.filereadable(target) ~= 1 then
     vim.notify(
@@ -527,14 +476,9 @@ local function windows_drives()
     return {}
   end
 
-  local output = vim.fn.systemlist({
-    "powershell",
-    "-NoProfile",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-Command",
-    "Get-PSDrive -PSProvider FileSystem | Select-Object -ExpandProperty Root",
-  })
+  local ok, text = require("wordvim.runtime").run_powershell("Get-PSDrive -PSProvider FileSystem | Select-Object -ExpandProperty Root")
+  local output = ok and vim.split(text, "\n", {trimempty=true}) or {}
+
 
   local drives = {}
   if vim.v.shell_error == 0 then
@@ -1206,7 +1150,7 @@ function M.restore_percent_widths(lines, docx)
       if width and width:match("^[%d%.]+%%$") then
         if line:match("{[^}]*}") then
           if line:match("width%s*=") then
-            line = line:gsub('width%s*=%s*"?[^%s}"]+"?', "width=" .. width, 1)
+            line = line:gsub('width%s*=%s*"?[^%s}"]+"?', function() return "width=" .. width end, 1)
           else
             line = line:gsub("{([^}]*)}", function(attrs)
               attrs = vim.trim(attrs)

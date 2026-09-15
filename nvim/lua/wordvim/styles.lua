@@ -854,7 +854,7 @@ function M.setup()
         vim.notify("Word Vim: style not found: " .. name, vim.log.levels.ERROR)
         return
       end
-      edit_style(style)
+      require("wordvim.styleeditor").open(buf, style.name)
       return
     end
 
@@ -872,7 +872,7 @@ function M.setup()
           style = M.materialize_builtin_style(buf, choice.name)
         end
         if style then
-          edit_style(style)
+          require("wordvim.styleeditor").open(buf, style.name)
         end
       end
     end)

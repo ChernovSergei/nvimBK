@@ -60,16 +60,7 @@ local function ps_escape(value)
 end
 
 local function run_powershell(script)
-  local output = vim.fn.system({
-    "powershell",
-    "-NoProfile",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-Command",
-    script,
-  })
-
-  return vim.v.shell_error == 0, output
+  return require("wordvim.runtime").run_powershell(script)
 end
 
 local function copy_file(src, dst)
@@ -1637,7 +1628,7 @@ try {
         $tempDir
     )
 
-    $stylesPath = Join-Path $tempDir 'word\styles.xml'
+    $stylesPath = Join-Path $tempDir 'word/styles.xml'
 
     if (-not (Test-Path -LiteralPath $stylesPath)) {
         throw 'word/styles.xml not found'
@@ -2072,6 +2063,8 @@ end
 -- ============================================================
 
 local function open_docx(args)
+  local ready, reason = require("wordvim.runtime").docx_ready()
+  if not ready then error("WordVim: " .. reason) end
   local buf = args.buf
   local docx = vim.api.nvim_buf_get_name(buf)
 
@@ -2137,7 +2130,7 @@ local function open_docx(args)
     return
   end
 
-  local raw_lines = vim.fn.readfile(temp_md)
+  local raw_lines = paragraphs.normalize_import(vim.fn.readfile(temp_md))
   vim.fn.delete(temp_md)
 
   -- Restore real inline Word tabs that were exposed to Pandoc as a safe
@@ -2427,6 +2420,8 @@ exit 1
 end
 
 local function save_docx(args)
+  local ready, reason = require("wordvim.runtime").docx_ready()
+  if not ready then error("WordVim: " .. reason) end
   local buf = args.buf
   local original = vim.b[buf].docx_original_file
 

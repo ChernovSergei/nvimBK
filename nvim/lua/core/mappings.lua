@@ -36,4 +36,4 @@ local opts = { noremap = true, silent = true }
 vim.keymap.set({ "n", "v" }, "<C-c>", '"+y', opts)
 vim.keymap.set( "n", "<C-v>", '"+p', opts)
 vim.keymap.set( "i", "<C-v>", '<C-r>+', opts)
-vim.keymap.set( "v", "<C-v>", '+p', opts)
+vim.keymap.set( "v", "<C-v>", '"+p', opts)

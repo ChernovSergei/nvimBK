@@ -1,0 +1,15 @@
+vim.opt.rtp:prepend(vim.fn.getcwd())
+local r=require('wordvim.runtime')
+local base=vim.fn.getcwd()..'/work/'
+vim.fn.mkdir('work','p')
+local python=vim.env.WORDVIM_TEST_PYTHON or r.python()
+assert(python,'Python/Pillow required for this test')
+vim.fn.system({python,'-c',"from PIL import Image;import sys;im=Image.new('RGB',(3,2));im.putdata([(255,0,0),(0,255,0),(0,0,255),(255,255,0),(0,255,255),(255,0,255)]);im.save(sys.argv[1])",base..'rotation-source.png'})
+assert(vim.v.shell_error==0,'Pillow fixture')
+local ok,err=r.rotate_image(base..'rotation-source.png',base..'rotation-windows.png',90);assert(ok,err)
+vim.g.wordvim_python=python
+ok,err=r.rotate_image(base..'rotation-source.png',base..'rotation-python.png',90);assert(ok,err)
+vim.fn.system({python,'-c',"from PIL import Image;import sys;s=Image.open(sys.argv[1]+'rotation-source.png').transpose(Image.Transpose.ROTATE_270);assert all(Image.open(sys.argv[1]+'rotation-'+n+'.png').tobytes()==s.tobytes() for n in ['windows','python'])",base})
+assert(vim.v.shell_error==0,'Rotation pixels/direction')
+print('PASS default and portable Python rotation: clockwise pixels and dimensions')
+vim.cmd('qa!')

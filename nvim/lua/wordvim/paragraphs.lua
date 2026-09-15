@@ -208,11 +208,27 @@ function M.attach(buf)
 
   -- Shift+Enter: hard line break INSIDE the same Word paragraph.  No separate
   -- style marker is created for the continuation row.
-  vim.keymap.set("i", "<S-CR>", "  <CR>", {
-    buffer = buf,
-    noremap = true,
-    silent = true,
-    desc = "Word Vim: line break inside paragraph",
+  local function line_break()
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    local row, col = cursor[1] - 1, cursor[2]
+    local style = styles.get_effective_paragraph_style(buf, row) or "Normal"
+    -- Insert directly: native Enter can strip trailing spaces via autoindent.
+    -- Do not pass through completion, list continuation or paragraph mappings.
+    vim.api.nvim_buf_set_text(buf, row, col, row, col, { "  ", "" })
+    styles.set_paragraph_style(buf, row, style)
+    styles.ensure_explicit_styles(buf)
+    vim.api.nvim_win_set_cursor(0, { row + 2, 0 })
+    notify_style_changed(buf, row, style)
+  end
+  vim.keymap.set("i", "<S-CR>", line_break, {
+    buffer = buf, silent = true, desc = "Word Vim: line break inside paragraph",
+  })
+  vim.keymap.set("i", "<S-kEnter>", line_break, {
+    buffer = buf, silent = true, desc = "Word Vim: keypad line break inside paragraph",
+  })
+  -- Portable alternative when a terminal sends Enter for Shift+Enter.
+  vim.keymap.set("i", "<C-g><CR>", line_break, {
+    buffer = buf, silent = true, desc = "Word Vim: line break inside paragraph",
   })
 
   local group = vim.api.nvim_create_augroup("WordVimParagraphs_" .. tostring(buf), { clear = true })
@@ -249,7 +265,63 @@ function M.detach(buf)
   end
 end
 
+-- Pandoc writes hard breaks as a single trailing backslash. The editor's
+-- paragraph model uses two trailing spaces. Preserve escaped literal slashes
+-- and fenced code; otherwise a save/reopen creates an extra Word paragraph.
+function M.normalize_import(lines)
+  local result, fence_char, fence_size = {}, nil, nil
+  for i,line in ipairs(lines) do
+    local marker=line:match('^%s*(```+)') or line:match('^%s*(~~~+)')
+    if marker then
+      if not fence_char then fence_char,fence_size=marker:sub(1,1),#marker
+      elseif marker:sub(1,1)==fence_char and #marker>=fence_size then fence_char,fence_size=nil,nil end
+      result[i]=line
+    elseif not fence_char then
+      local slashes=line:match('(\\+)$')
+      result[i]=slashes and #slashes%2==1 and (line:sub(1,-2)..'  ') or line
+    else result[i]=line end
+  end
+  return result
+end
 function M.setup()
+  vim.api.nvim_create_user_command("WordTerminalSetup", function(opts)
+    local module_path = debug.getinfo(1, "S").source:sub(2)
+    local script = vim.fn.fnamemodify(module_path, ":p:h:h:h") .. "/tools/Enable-ShiftEnter.ps1"
+    local windows = vim.fn.has("win32") == 1
+    local shell = windows and "powershell" or "powershell.exe"
+    if vim.fn.executable(shell) == 0 then
+      vim.notify("Windows Terminal setup requires Windows PowerShell. Use Ctrl+g Enter or configure your terminal to send CSI-u Shift+Enter.", vim.log.levels.ERROR)
+      return
+    end
+    if not windows then
+      script = vim.trim(vim.fn.system({"wslpath", "-w", script}))
+      if vim.v.shell_error ~= 0 then vim.notify("Cannot translate script path for Windows", vim.log.levels.ERROR); return end
+    end
+    local command = {shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-Apply"}
+    if opts.fargs[1] then vim.list_extend(command, {"-SettingsPath", opts.fargs[1]}) end
+    local output = vim.fn.system(command)
+    vim.notify(output, vim.v.shell_error == 0 and vim.log.levels.INFO or vim.log.levels.ERROR)
+  end, {nargs = "?", complete = "file", desc = "Configure Windows Terminal Shift+Enter (backs up settings)"})
+  vim.api.nvim_create_user_command("WordKeyCheck", function()
+    vim.api.nvim_echo({{"Press Shift+Enter once (Esc cancels): ", "Question"}}, false, {})
+    vim.cmd("redraw")
+    local key = vim.fn.getcharstr()
+    local modifiers = vim.fn.getcharmod()
+    local label = vim.fn.keytrans(key)
+    if label == "<Esc>" then return end
+    local shift = math.floor(modifiers / 2) % 2 == 1
+    local message = "Received: " .. label .. "; modifiers=" .. modifiers
+    if (label == "<CR>" or label == "<NL>") and not shift then
+      message = message .. "\nTerminal sent ordinary Enter; Shift is missing. "
+        .. ((require("wordvim.runtime").windows() or vim.env.WT_SESSION)
+          and "Windows Terminal: run :WordTerminalSetup, then restart Neovim. "
+          or "Configure this terminal to send CSI-u Shift+Enter. ")
+        .. "Portable DOCX shortcut: Ctrl+g then Enter."
+    else
+      message = message .. "\nUse Shift+Enter in Insert mode. If it still fails, report this result."
+    end
+    vim.notify(message, vim.log.levels.INFO)
+  end, {desc = "Check the actual Shift+Enter key received from the terminal"})
 end
 
 return M

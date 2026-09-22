@@ -97,7 +97,7 @@ local function get_session_by_any_buffer(buf)
   end
 
   for _, session in pairs(sessions) do
-    if session.left_buf == buf or session.right_buf == buf then
+    if session.left_buf == buf or session.right_buf == buf or (session.table_editor and session.table_editor.buf == buf) then
       return session
     end
   end
@@ -277,6 +277,14 @@ local function ensure_highlights(session)
   })
 end
 
+-- Shared by the document panels and table editor: one numbering and palette.
+function M.catalog(buf)
+  local session = {doc_buf=buf}
+  rebuild_style_numbers(session)
+  ensure_highlights(session)
+  return session
+end
+
 -- ------------------------------------------------------------
 -- Paragraph model
 --
@@ -362,6 +370,7 @@ local function screen_height_for_row(session, row)
 end
 
 local function render_left(session)
+  if session and session.table_editor then return end
   if not valid_buf(session.left_buf) then
     return
   end
@@ -542,6 +551,7 @@ end
 -- ------------------------------------------------------------
 
 local function effective_style_at_cursor(session)
+  if session.table_editor then return session.table_editor.active() end
   if not valid_win(session.doc_win) then
     return "Normal"
   end
@@ -647,6 +657,7 @@ end
 -- ------------------------------------------------------------
 
 local function sync_left_view(session)
+  if session and session.table_editor then return end
   if
     not valid_win(session.doc_win)
     or not valid_win(session.left_win)
@@ -720,6 +731,7 @@ local function sync_left_view(session)
 end
 
 local function sync_document_from_left(session)
+  if session and session.table_editor then return end
   if
     not valid_win(session.doc_win)
     or not valid_win(session.left_win)
@@ -752,6 +764,7 @@ local function sync_document_from_left(session)
 end
 
 local function refresh_active_style(session)
+  if session and session.table_editor then return end
   if not session then
     return
   end
@@ -814,7 +827,7 @@ local function configure_left_window(win)
   vim.wo[win].wrap = false
   vim.wo[win].cursorline = true
   vim.wo[win].scrollbind = false
-  vim.wo[win].winfixwidth = false
+  vim.wo[win].winfixwidth = true
 end
 
 local function configure_right_window(win)
@@ -824,7 +837,7 @@ local function configure_right_window(win)
   vim.wo[win].foldcolumn = "0"
   vim.wo[win].wrap = false
   vim.wo[win].cursorline = true
-  vim.wo[win].winfixwidth = false
+  vim.wo[win].winfixwidth = true
 end
 
 local function left_width()
@@ -858,6 +871,7 @@ local function restore_document_window(session)
 end
 
 local function cleanup_session_if_empty(session)
+  if session and session.table_editor then return end
   if not session then
     return
   end
@@ -1026,7 +1040,10 @@ local function ensure_right_panel(session)
   vim.keymap.set("n", "<CR>", function()
     local current = sessions[session.doc_buf]
     if current then
-      open_selected_style_editor(current)
+      if current.table_editor then
+        current.table_editor.apply(current.style_order[vim.api.nvim_win_get_cursor(current.right_win)[1]])
+        vim.api.nvim_set_current_win(current.doc_win)
+      else open_selected_style_editor(current) end
     end
   end, {
     buffer = session.right_buf,
@@ -1044,6 +1061,30 @@ local function ensure_right_panel(session)
     silent = true,
     desc = "Word Vim: edit selected style",
   })
+end
+
+function M.begin_table(doc_buf, target)
+  M.open(doc_buf, "right")
+  local session=sessions[doc_buf]
+  session.table_editor=target
+  session.table_left_open=valid_win(session.left_win)
+  if session.table_left_open then M.close_side(doc_buf,"left") end
+  return session
+end
+
+function M.refresh_table(doc_buf)
+  local session=sessions[doc_buf]
+  if session then rebuild_style_numbers(session);ensure_highlights(session);render_right(session) end
+end
+
+function M.end_table(doc_buf)
+  local session=sessions[doc_buf]
+  if not session then return end
+  session.table_editor=nil
+  if session.table_left_open then ensure_left_panel(session) end
+  session.table_left_open=nil
+  build_paragraph_model(session);refresh(session);sync_left_view(session)
+  if valid_win(session.doc_win) then vim.api.nvim_set_current_win(session.doc_win) end
 end
 
 function M.open(doc_buf, mode)

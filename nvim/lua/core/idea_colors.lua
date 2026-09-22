@@ -27,6 +27,8 @@ function M.apply()
   hl('@lsp.type.property.java @variable.member.java', {fg=p.field})
   hl('@lsp.type.method.java @function.method.java @function.java', {fg=p.method})
   hl('javaDocComment javaCommentTitle javaDocTags javaDocParam @comment.documentation.java', {fg='#629755',italic=false})
+  hl('@keyword.modifier.java @keyword.function.java @keyword.return.java @keyword.conditional.java @keyword.repeat.java @keyword.import.java @keyword.exception.java @constant.builtin.java @boolean.java', {fg=p.keyword})
+  hl('@punctuation.bracket.java @punctuation.delimiter.java @operator.java', {fg=p.fg})
   hl('@lsp.mod.static.java', {italic=false})
 end
 function M.setup()
@@ -37,5 +39,6 @@ function M.setup()
   vim.o.guifont='JetBrains Mono:h14'
 end
 return M
+
 
 

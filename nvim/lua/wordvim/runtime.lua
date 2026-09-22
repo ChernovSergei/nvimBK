@@ -7,7 +7,7 @@ function M.powershell()
     if vim.fn.executable(name)==1 then return vim.fn.exepath(name) end
   end
 end
-function M.run_powershell(script)
+function M.run_powershell(script, sta)
   local shell=M.powershell()
   if not shell or vim.fn.executable(shell)~=1 then
     return false,'DOCX requires '..(M.windows() and 'Windows PowerShell or PowerShell 7' or 'PowerShell 7 (pwsh) inside this Linux/proot distribution')..'. Run :WordHealth.'
@@ -18,7 +18,10 @@ function M.run_powershell(script)
   local lines=vim.split('\239\187\191'..preamble..script,'\n',{plain=true})
   local wrote,err=pcall(vim.fn.writefile,lines,file)
   if not wrote or err~=0 then vim.fn.delete(file);return false,'Cannot write PowerShell script: '..tostring(err) end
-  local ok,out=pcall(vim.fn.system,{shell,'-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',file})
+  local args={shell,'-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass'}
+  if sta and M.windows() then args[#args+1]='-STA' end
+  vim.list_extend(args,{'-File',file})
+  local ok,out=pcall(vim.fn.system,args)
   local status=vim.v.shell_error
   vim.fn.delete(file)
   return ok and status==0,tostring(out)
@@ -69,3 +72,4 @@ function M.health()
   vim.api.nvim_buf_set_lines(0,0,-1,false,lines);vim.bo.modifiable=false
 end
 return M
+

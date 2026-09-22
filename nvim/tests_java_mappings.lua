@@ -3,7 +3,7 @@ vim.g.mapleader = ' '
 local connected, calls, notice = false, 0, ''
 vim.lsp.get_clients = function() return connected and {{name='jdtls'}} or {} end
 vim.notify = function(msg) notice=msg end
-vim.lsp.buf.rename = function() calls=calls+1 end
+require('plugins.java_edit').rename = function() calls=calls+1 end
 package.loaded['jdtls.setup'] = {find_root=function() return 'project' end}
 package.loaded['plugins.java_launch'] = {build=function() return nil, 'missing launcher' end}
 dofile('ftplugin/java.lua')

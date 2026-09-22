@@ -350,7 +350,10 @@ function M.renumber_buffer(buf)
         ) .. item.body
 
       if replacement ~= line then
-        lines[i] = replacement
+        -- Replace only the prefix: paragraph/table extmarks must not collapse.
+        pcall(vim.cmd, 'undojoin')
+        vim.api.nvim_buf_set_text(buf, i-1, 0, i-1, #line-#item.body,
+          {replacement:sub(1,#replacement-#item.body)})
         changed = true
       end
 
@@ -366,9 +369,6 @@ function M.renumber_buffer(buf)
     end
   end
 
-  if changed then
-    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  end
 end
 
 local function current_row_for_buf(buf)
@@ -1830,6 +1830,43 @@ for ($i = 0; $i -lt $wired.Count; $i++) {
 end
 
 function M.setup()
+  local pending = {}
+  vim.api.nvim_create_autocmd({'TextChanged','InsertLeave'}, {
+    group=vim.api.nvim_create_augroup('WordVimAutoNumber',{clear=true}),
+    callback=function(event)
+      local b=event.buf
+      if not vim.b[b].wordvim_docx or pending[b] then return end
+      pending[b]=true
+      vim.schedule(function()
+        pending[b]=nil
+        if vim.api.nvim_buf_is_valid(b) and vim.bo[b].modifiable then M.renumber_buffer(b) end
+      end)
+    end,
+  })
+  vim.api.nvim_create_user_command('WordListRenumber',function() M.renumber_buffer(0) end,{})
+  for name,delta in pairs({WordListMoveUp=-1,WordListMoveDown=1}) do
+    vim.api.nvim_create_user_command(name,function()
+      local row=vim.api.nvim_win_get_cursor(0)[1]
+      local lines=vim.api.nvim_buf_get_lines(0,0,-1,false)
+      local item=M.parse(lines[row])
+      if not item then return end
+      local last=row
+      while M.parse(lines[last+1] or '') and M.parse(lines[last+1]).level>item.level do last=last+1 end
+      local destination
+      if delta<0 then
+        local prev=row-1
+        while prev>0 and M.parse(lines[prev]) and M.parse(lines[prev]).level>item.level do prev=prev-1 end
+        if M.parse(lines[prev] or '') and M.parse(lines[prev]).level==item.level then destination=prev-1 end
+      else
+        local nextItem=M.parse(lines[last+1] or '')
+        if nextItem and nextItem.level==item.level then
+          destination=last+1
+          while M.parse(lines[destination+1] or '') and M.parse(lines[destination+1]).level>item.level do destination=destination+1 end
+        end
+      end
+      if destination then vim.cmd(string.format('%d,%dmove %d',row,last,destination));M.renumber_buffer(0) end
+    end,{desc='Move list item with its children'})
+  end
   vim.api.nvim_create_user_command(
     "WordListNumbered",
     function()

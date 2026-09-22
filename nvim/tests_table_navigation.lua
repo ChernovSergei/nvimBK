@@ -31,7 +31,7 @@ local function check(y,x)
  local line=bufs[2][cursor[1]]
  local ch=line:sub(cursor[2]+1,cursor[2]+1)
  assert(ch~=' ' and ch~='' and ch:byte()~=226,'cursor on border or padding')
- maps['<CR>']();assert(prompt==string.format('Cell %d,%d: ',y,x),'wrong selected cell')
+ maps['<CR>']();assert(prompt==string.format('Cell %d,%d style (1-7): ',y,x),'wrong selected cell')
 end
 check(1,1)
 for x=2,5 do maps.l();check(1,x)end

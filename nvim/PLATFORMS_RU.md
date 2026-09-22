@@ -1,3 +1,5 @@
+> Дополнения v6.73 (rich clipboard, Java rename, списки, таблицы): см. CHANGES_v6_73_RU.md.
+
 # WordVim v6_62: Windows, Linux и Android proot-distro
 
 Одна конфигурация выбирает окружение автоматически. На Android запускайте Neovim

@@ -32,12 +32,13 @@ function M.setup_buffer(bufnr)
     vim.notify(M.status(bufnr))
   end, {force = true})
 
+  vim.api.nvim_buf_create_user_command(bufnr,'JavaClass',function() require('plugins.java_edit').template() end,{force=true})
   -- General
   map('n', 'K', vim.lsp.buf.hover, opts)
   map('n', 'gD', vim.lsp.buf.declaration, opts)
   map('n', 'gd', vim.lsp.buf.definition, opts)
   map('n', 'gr', require('plugins.java_navigation').references, opts)
-  map('n', '<leader>rn', vim.lsp.buf.rename, opts)
+  map('n', '<leader>rn', require('plugins.java_edit').rename, opts)
   map({'n', 'v'}, '<leader>ca', vim.lsp.buf.code_action, opts)
   vim.keymap.set('n', '<leader>d', vim.diagnostic.open_float, opts)
   map({ "n", "v" }, "<leader>ja", function()
@@ -47,7 +48,7 @@ function M.setup_buffer(bufnr)
     vim.lsp.buf.code_action()
   end
   end, opts)
-  map("n", "<leader>jr", vim.lsp.buf.rename, opts)
+  map("n", "<leader>jr", require('plugins.java_edit').rename, opts)
 
   -- Code generation
   map("n", "<leader>jc", function()
@@ -96,11 +97,18 @@ function M.setup_buffer(bufnr)
   map("n", "<leader>tn", jdtls.test_nearest_method, opts)
 end
 
-function M.on_attach(_, bufnr)
+function M.on_attach(client, bufnr)
+  -- Prefer locally updated syntax colors while editing. LSP diagnostics remain enabled.
+  if vim.g.wordvim_java_semantic_colors ~= true and client.server_capabilities then
+    client.server_capabilities.semanticTokensProvider = nil
+    if client.id then pcall(vim.lsp.semantic_tokens.stop, bufnr, client.id) end
+  end
   vim.b[bufnr].wordvim_java_error = nil
   M.setup_buffer(bufnr)
 end
 
 return M
+
+
 
 

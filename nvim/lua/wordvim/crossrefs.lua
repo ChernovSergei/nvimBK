@@ -892,13 +892,13 @@ finally {
   return result
 end
 
-function M.restore_from_docx(buf, docx)
+function M.restore_from_docx(buf, docx, no_fields)
   local s = get_state(buf)
   vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
   s.captions = {}
   s.refs = {}
 
-  local info = inspect_docx(docx)
+  local info = no_fields and {captions={},refs={}} or inspect_docx(docx)
   local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
   local used_rows = {}
 

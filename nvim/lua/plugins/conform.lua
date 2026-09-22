@@ -1,5 +1,6 @@
 local conform = require("conform")
 conform.setup({
+    formatters = { ["google-java-format"] = { prepend_args = { "--aosp" } } },
     formatters_by_ft = {
         java = {"google-java-format"},
         javascript = {"prettier"},
@@ -16,7 +17,7 @@ conform.setup({
             return nil
         end
         return {
-            timeout_ms = 500,
+            timeout_ms = 2000,
             lsp_fallback = true,
         }
     end
@@ -34,3 +35,4 @@ vim.keymap.set("n","<leader>f",
     end,
     {desc="Format file"}
 )
+

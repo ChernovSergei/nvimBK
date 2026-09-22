@@ -23,6 +23,7 @@ local help = require("wordvim.help")
 
 function M.setup()
   docx.setup()
+  require("wordvim.clipboard").setup()
   formatting.setup()
   tables.setup()
   lists.setup()

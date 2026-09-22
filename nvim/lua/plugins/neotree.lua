@@ -25,6 +25,7 @@ require("neo-tree").setup({
   filesystem = {
     window = {
       mappings = {
+        ["z"] = { "close_all_nodes", nowait = false },
         ["zO"] = "expand_all_subnodes",
         ["zM"] = "close_all_nodes",
         ["<CR>"] = function(state)

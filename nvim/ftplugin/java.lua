@@ -1,3 +1,5 @@
+vim.bo.expandtab=true; vim.bo.shiftwidth=4; vim.bo.tabstop=4
+require('plugins.java_edit').template()
 local java = require('plugins.java')
 local bufnr = vim.api.nvim_get_current_buf()
 java.setup_buffer(bufnr)
@@ -12,6 +14,7 @@ local function start()
   if not config then error(err) end
   config.capabilities = require('cmp_nvim_lsp').default_capabilities()
   config.on_attach = java.on_attach
+  config.flags = { debounce_text_changes = 150 }
   require('jdtls').start_or_attach(config)
 end
 local ok, err = pcall(start)
@@ -23,3 +26,4 @@ if not ok then
     vim.notify('WordVim Java: ' .. tostring(err), vim.log.levels.WARN)
   end)
 end
+

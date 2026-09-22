@@ -16,6 +16,9 @@ local function newspec(r,c)
  for y=1,r do s.cells[y]={};for x=1,c do s.cells[y][x]=cell(y==1 and("Column "..x)or"",y==1 and"header"or"normal")end end
  return s
 end
+local style_names={"normal","header","bold","italic","accent","warning","note"}
+local style_ids={}
+for i,name in ipairs(style_names) do style_ids[name]=i end
 local styles={normal=true,header=true,bold=true,italic=true,accent=true,warning=true,note=true}
 local function normalize(s)
  s.rows,s.cols=clamp(tonumber(s.rows)or 1,1,50),clamp(tonumber(s.cols)or 1,1,20);s.version=1
@@ -34,9 +37,13 @@ local function summary(s)
  local n=0;for y=1,s.rows do for x=1,s.cols do local q=s.cells[y][x];if q.rowspan>1 or q.colspan>1 then n=n+1 end end end
  return string.format("%s %d x %d | header: %d | borders: %s%s",LABEL,s.rows,s.cols,s.header_rows,s.border,n>0 and(" | merged: "..n)or"")
 end
+-- Markdown Tree-sitter can consume the rest of the document after all-empty
+-- pipe rows. NBSP is an editor-only empty-cell placeholder, stripped by
+-- absorb_text; html()/DOCX serialization always use the original cell text.
+local EMPTY_CELL = "\194\160"
 local function display(s)
  local out={summary(s)}
- for y=1,s.rows do local p={"|"};for x=1,s.cols do local q=s.cells[y][x];local t=q.text:gsub("\n"," ↵ "):gsub("|","¦");p[#p+1]=" "..t.." |"end;out[#out+1]=table.concat(p);if y==1 then local z={"|"};for _=1,s.cols do z[#z+1]=" --- |"end;out[#out+1]=table.concat(z)end end
+ for y=1,s.rows do local p={"|"};for x=1,s.cols do local q=s.cells[y][x];local t=q.text:gsub("\n"," ↵ "):gsub("|","¦");if t=="" then t=EMPTY_CELL end;p[#p+1]=" "..t.." |"end;out[#out+1]=table.concat(p);if y==1 then local z={"|"};for _=1,s.cols do z[#z+1]=" --- |"end;out[#out+1]=table.concat(z)end end
  return out
 end
 local function html(s)
@@ -136,7 +143,7 @@ end
 absorb_text=function(s,lines)
  local canonical=display(s);if#lines~=#canonical or lines[1]~=canonical[1]or lines[3]~=canonical[3]then return false end
  local changed=false
- for y=1,s.rows do local idx=y==1 and 2 or y+2;local values=pipe_cells(lines[idx]);if#values~=s.cols then return false end;for x=1,s.cols do local v=values[x]:gsub("¦","|"):gsub(" ↵ ","\n");if s.cells[y][x].text~=v then s.cells[y][x].text=v;changed=true end end end
+ for y=1,s.rows do local idx=y==1 and 2 or y+2;local values=pipe_cells(lines[idx]);if#values~=s.cols then return false end;for x=1,s.cols do local v=values[x]:gsub("¦","|"):gsub(" ↵ ","\n");if v==EMPTY_CELL then v="" end;if s.cells[y][x].text~=v then s.cells[y][x].text=v;changed=true end end end
  return true,changed
 end
 function M.protect(b)
@@ -148,6 +155,7 @@ end
 local function draw(s)
  local m,o=cover(s.spec),{}
  local width=math.max(1,vim.api.nvim_win_get_width(s.win))
+ s.catalog=require("wordvim.styleui").catalog(s.source)
  local function help(text)
   local line=""
   for word in text:gmatch("%S+") do
@@ -163,25 +171,71 @@ local function draw(s)
  help(string.format("TABLE EDITOR %dx%d | Header:%d | Lines:%s",s.spec.rows,s.spec.cols,s.spec.header_rows,s.spec.border))
  help("?: Help | F1: Help | W: Apply | q: Cancel")
  o[#o+1]=string.rep("─",math.min(width,15*s.spec.cols+1))
+ local visible=math.min(s.spec.cols,math.max(1,math.floor((width-2)/8)))
+ local first_col=math.max(1,math.min(s.x-visible+1,s.spec.cols-visible+1))
+ local last_col=first_col+visible-1
+ local cell_width=math.max(4,math.min(14,math.floor((width-2)/visible)))
+ if visible<s.spec.cols then help(string.format("Columns %d-%d/%d (h/l to scroll)",first_col,last_col,s.spec.cols)) end
  local first_cell_row=#o+1
+ s.first_cell_row=first_cell_row
  s.pos={}
 
- for y=1,s.spec.rows do local parts,col={},0;s.pos[y]={};for x=1,s.spec.cols do local z=m[y][x];if z.y==y and z.x==x then local q=s.spec.cells[y][x];local t=q.text:gsub("\n"," ");if vim.fn.strdisplaywidth(t)>8 then t=vim.fn.strcharpart(t,0,7).."…"end;if t==""then t="·"end;if q.style~="normal"then t=t.."{"..q.style:sub(1,1):upper().."}"end;if q.rowspan>1 or q.colspan>1 then t=t..string.format("[%dx%d]",q.rowspan,q.colspan)end;t=t..string.rep(" ",math.max(0,11-vim.fn.strdisplaywidth(t)));parts[#parts+1]="│ "..t.." ";s.pos[y][x]=col+#"│ ";col=col+#parts[#parts] elseif z.h then parts[#parts+1]="             ";col=col+#parts[#parts] else parts[#parts+1]="│     ↥      ";s.pos[y][x]=col+#"│ ";col=col+#parts[#parts] end end;o[#o+1]=table.concat(parts).."│";o[#o+1]=string.rep("─",math.min(178,14*s.spec.cols+1))end
+ for y=1,s.spec.rows do local parts,col={},0;s.pos[y]={};for x=first_col,last_col do local z=m[y][x];if z.y==y and z.x==x then local q=s.spec.cells[y][x];local t=tostring(s.catalog.style_to_number[(q.word_style or "Normal"):lower()] or 1);if cell_width>=12 and (q.rowspan>1 or q.colspan>1) then t=t..string.format("[%dx%d]",q.rowspan,q.colspan)end;t=t..string.rep(" ",math.max(0,cell_width-3-vim.fn.strdisplaywidth(t)));parts[#parts+1]="│ "..t.." ";s.pos[y][x]=col+#"│ ";col=col+#parts[#parts] elseif z.h then parts[#parts+1]=string.rep(" ",cell_width);col=col+#parts[#parts] else parts[#parts+1]="│ ".."↥"..string.rep(" ",cell_width-3);s.pos[y][x]=col+#"│ ";col=col+#parts[#parts] end end;o[#o+1]=table.concat(parts).."│";o[#o+1]=string.rep("─",cell_width*visible+1)end
  vim.bo[s.buf].modifiable=true;vim.api.nvim_buf_set_lines(s.buf,0,-1,false,o);vim.bo[s.buf].modifiable=false;local y,x=owner(s.spec,s.y,s.x);s.y,s.x=y,x;vim.api.nvim_win_set_cursor(s.win,{first_cell_row+(y-1)*2,s.pos[y][x]or 0})
+ vim.api.nvim_buf_clear_namespace(s.buf,ns,0,-1)
+ for yy,cols in pairs(s.pos) do for xx,col in pairs(cols) do
+  local q=s.spec.cells[yy][xx]
+  local n=s.catalog.style_to_number[(q.word_style or "Normal"):lower()] or 1
+  vim.api.nvim_buf_add_highlight(s.buf,ns,s.catalog.highlights[n],first_cell_row-1+(yy-1)*2,col,col+#tostring(n))
+ end end
+ require("wordvim.styleui").refresh_table(s.source)
 end
 local function select(items,prompt,cb)vim.ui.select(items,{prompt=prompt},function(v)if v then cb(v)end end)end
 local function finish(s,save)
- if save then if s.item then replace_item(s.source,s.item,s.spec)else local r=vim.api.nvim_win_get_cursor(s.source_win)[1];local lines=display(s.spec);local st=state(s.source);st.updating=true;vim.api.nvim_buf_set_lines(s.source,r,r,false,lines);local it=attach(s.source,r,s.spec);st.updating=false end;vim.bo[s.source].modified=true end
- if vim.api.nvim_win_is_valid(s.win)then vim.api.nvim_win_close(s.win,true)end
+ if save then
+  for _,row in ipairs(s.spec.cells) do for _,q in ipairs(row) do
+   if q.word_style then
+    local style=require("wordvim.styles").materialize_builtin_style(s.source,q.word_style)
+    assert(style,"Missing paragraph style: "..q.word_style)
+    q.word_style_id=style.id
+   end
+  end end
+ end
+
+ if save then if s.item then replace_item(s.source,s.item,s.spec)else local r=s.view.lnum;local lines=display(s.spec);local st=state(s.source);st.updating=true;vim.api.nvim_buf_set_lines(s.source,r,r,false,lines);local it=attach(s.source,r,s.spec);st.updating=false end;vim.bo[s.source].modified=true end
+ s.closed=true
+ if vim.api.nvim_win_is_valid(s.win) then
+  vim.api.nvim_win_set_buf(s.win,s.source)
+  for name,value in pairs(s.window_options) do vim.wo[s.win][name]=value end
+  vim.api.nvim_set_current_win(s.win)
+  vim.fn.winrestview(s.view)
+ end
+ require("wordvim.styleui").end_table(s.source)
+ if vim.api.nvim_buf_is_valid(s.buf) then vim.api.nvim_buf_delete(s.buf,{force=true}) end
+ vim.api.nvim_buf_call(s.source,function()vim.cmd("syntax sync fromstart")end)
+ vim.api.nvim_exec_autocmds("User",{pattern="WordVimStyleChanged",data={buf=s.source}})
 end
 local function show_help() require("wordvim.help").open() end
 local function open_editor(it,r,c)
- local source,sw=vim.api.nvim_get_current_buf(),vim.api.nvim_get_current_win();local spec=it and vim.deepcopy(it.spec)or newspec(r,c);local b=vim.api.nvim_create_buf(false,true);vim.bo[b].buftype="nofile";vim.bo[b].bufhidden="wipe";vim.bo[b].filetype="wordvim-table";local function geometry()
- return {relative="editor",row=0,col=0,width=math.max(1,vim.o.columns-2),height=math.max(1,vim.o.lines-vim.o.cmdheight-2),style="minimal",border="rounded",title=" Word Vim Table Editor ",title_pos="center"}
+ local source,sw=vim.api.nvim_get_current_buf(),vim.api.nvim_get_current_win()
+ local spec=it and vim.deepcopy(it.spec) or newspec(r,c)
+ local b=vim.api.nvim_create_buf(false,true)
+ vim.bo[b].buftype="nofile";vim.bo[b].bufhidden="hide";vim.bo[b].filetype="wordvim-table"
+ local s={buf=b,win=sw,source=source,source_win=sw,item=it,spec=spec,y=1,x=1,view=vim.fn.winsaveview(),window_options={}}
+ for _,name in ipairs({'wrap','number','relativenumber','cursorline','scrollbind','conceallevel','winfixwidth'}) do s.window_options[name]=vim.wo[sw][name] end
+ local function apply_style(name)
+  if s.closed or not name then return end
+  local y,x=owner(s.spec,s.y,s.x)
+  s.spec.cells[y][x].word_style=name;s.spec.cells[y][x].style="normal";s.last_style=name
+  draw(s)
  end
- local win=vim.api.nvim_open_win(b,true,geometry())
- vim.wo[win].wrap=false
-;local s={buf=b,win=win,source=source,source_win=sw,item=it,spec=spec,y=1,x=1};local op={buffer=b,silent=true,nowait=true}
+ require("wordvim.styleui").begin_table(source,{buf=b,active=function()return s.spec.cells[s.y][s.x].word_style or "Normal" end,apply=apply_style})
+ vim.api.nvim_win_set_buf(sw,b);vim.api.nvim_set_current_win(sw)
+ vim.wo[sw].wrap=false;vim.wo[sw].number=false;vim.wo[sw].relativenumber=false;vim.wo[sw].scrollbind=false;vim.wo[sw].conceallevel=0
+ local win=sw
+ local op={buffer=b,silent=true,nowait=true}
+ vim.keymap.set("n","<leader>wr",function()require("wordvim.styleui").toggle_right();draw(s)end,{buffer=b,silent=true})
+ vim.keymap.set("n",".",function()apply_style(s.last_style)end,op)
  vim.keymap.set("n","?",show_help,op)
  vim.keymap.set("n","<F1>",show_help,op)
  local function move(dy,dx)
@@ -211,17 +265,33 @@ local function open_editor(it,r,c)
  end
  for _,key in ipairs({"w","<Tab>"})do vim.keymap.set("n",key,function()step(1)end,op)end
  for _,key in ipairs({"b","<S-Tab>"})do vim.keymap.set("n",key,function()step(-1)end,op)end
- local resize=vim.api.nvim_create_autocmd("VimResized",{callback=function()
-  if vim.api.nvim_win_is_valid(win)then vim.api.nvim_win_set_config(win,geometry());draw(s)end
+ local resize=vim.api.nvim_create_autocmd({"VimResized","WinResized"},{callback=function()
+  if not s.closed and vim.api.nvim_win_is_valid(win) then draw(s) end
  end})
- vim.api.nvim_create_autocmd("BufWipeout",{buffer=b,once=true,callback=function()
-  pcall(vim.api.nvim_del_autocmd,resize)
+ vim.api.nvim_create_autocmd("BufWipeout",{buffer=b,once=true,callback=function()pcall(vim.api.nvim_del_autocmd,resize)end})
+ vim.api.nvim_create_autocmd("BufEnter",{buffer=b,callback=function()if not s.closed then draw(s) end end})
+ vim.api.nvim_create_autocmd({"CursorMoved","WinEnter"},{buffer=b,callback=function()
+  if s.closed or not s.pos or vim.api.nvim_get_current_buf()~=b then return end
+  local cursor=vim.api.nvim_win_get_cursor(s.win)
+  local y=clamp(math.floor((cursor[1]-s.first_cell_row)/2+0.5)+1,1,s.spec.rows)
+  local x,distance=s.x,math.huge
+  for column,offset in pairs(s.pos[y] or {}) do
+   if math.abs(cursor[2]-offset)<distance then x=column;distance=math.abs(cursor[2]-offset) end
+  end
+  y,x=owner(s.spec,y,x);s.y,s.x=y,x
+  local expected={s.first_cell_row+(y-1)*2,s.pos[y][x] or 0}
+  if cursor[1]~=expected[1] or cursor[2]~=expected[2] then vim.api.nvim_win_set_cursor(s.win,expected) end
  end})
- vim.keymap.set("n","<CR>",function()local y,x=owner(s.spec,s.y,s.x);vim.ui.input({prompt=string.format("Cell %d,%d: ",y,x),default=s.spec.cells[y][x].text},function(v)if v~=nil then s.spec.cells[y][x].text=v;draw(s)end end)end,op)
- vim.keymap.set("n","<Space>",function()s.anchor={s.y,s.x};vim.notify("Word Vim: anchor set; move and press M")end,op)
+ local function set_style(number)
+  local name=s.catalog.number_to_style[tonumber(number)]
+  if name then apply_style(name) end
+ end
+ for number=1,9 do vim.keymap.set("n",tostring(number),function()set_style(number)end,op) end
+ vim.keymap.set("n","<CR>",function()local y,x=owner(s.spec,s.y,s.x);vim.ui.input({prompt=string.format("Cell %d,%d style number: ",y,x),default=tostring(s.catalog.style_to_number[(s.spec.cells[y][x].word_style or "Normal"):lower()] or 1)},set_style)end,op)
+
  vim.keymap.set("n","M",function()if not s.anchor then s.anchor={s.y,s.x};vim.notify("Word Vim: anchor set; move and press M");return end;local y1,y2=math.min(s.anchor[1],s.y),math.max(s.anchor[1],s.y);local x1,x2=math.min(s.anchor[2],s.x),math.max(s.anchor[2],s.x);local texts={};for y=y1,y2 do for x=x1,x2 do local ay,ax=owner(s.spec,y,x);local q=s.spec.cells[ay][ax];if ay<y1 or ax<x1 or ay+q.rowspan-1>y2 or ax+q.colspan-1>x2 then s.anchor=nil;vim.notify("Selection cuts an existing merged cell",vim.log.levels.ERROR);return end;if ay==y and ax==x and q.text~=""then texts[#texts+1]=q.text end;q.rowspan,q.colspan=1,1 end end;local q=s.spec.cells[y1][x1];q.text=table.concat(texts," ");q.rowspan,q.colspan=y2-y1+1,x2-x1+1;s.y,s.x,s.anchor=y1,x1,nil;draw(s)end,op)
  vim.keymap.set("n","U",function()local y,x=owner(s.spec,s.y,s.x);s.spec.cells[y][x].rowspan,s.spec.cells[y][x].colspan=1,1;draw(s)end,op)
- vim.keymap.set("n","S",function()local y,x=owner(s.spec,s.y,s.x);select({"normal","bold","italic","accent","warning","note","header"},"Cell style",function(v)s.spec.cells[y][x].style=v;draw(s)end)end,op)
+ vim.keymap.set("n","S",function()local y,x=owner(s.spec,s.y,s.x);select(s.catalog.style_order,"Cell paragraph style",apply_style)end,op)
  vim.keymap.set("n","B",function()local y,x=owner(s.spec,s.y,s.x);select({"inherit","none","thin","thick"},"Cell borders",function(v)s.spec.cells[y][x].border=v;draw(s)end)end,op)
  vim.keymap.set("n","L",function()select({"grid","outer","none"},"Table borders",function(v)s.spec.border=v;draw(s)end)end,op)
  vim.keymap.set("n","H",function()vim.ui.input({prompt="Header rows: ",default=tostring(s.spec.header_rows)},function(v)if tonumber(v)then s.spec.header_rows=clamp(tonumber(v),0,s.spec.rows);draw(s)end end)end,op)
@@ -240,7 +310,7 @@ function M.apply_to_docx(docx)
  local ps=string.format([[
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $z=[IO.Compression.ZipFile]::Open('%s','Update');try{$e=$z.GetEntry('word/document.xml');$r=New-Object IO.StreamReader($e.Open());$t=$r.ReadToEnd();$r.Close();$x=New-Object Xml.XmlDocument;$x.PreserveWhitespace=$true;$x.LoadXml($t);$n=New-Object Xml.XmlNamespaceManager($x.NameTable);$n.AddNamespace('w','http://schemas.openxmlformats.org/wordprocessingml/2006/main');$u=$n.LookupNamespace('w')
-foreach($p in @($x.SelectNodes('//w:p',$n))){$v=($p.SelectNodes('.//w:t',$n)|%%{$_.InnerText})-join'';if($v-match'WORDVIM_TABLE_META_([0-9A-Fa-f]+)'){$h=$Matches[1];$a=for($i=0;$i-lt$h.Length;$i+=2){[Convert]::ToByte($h.Substring($i,2),16)};$s=([Text.Encoding]::UTF8.GetString($a)|ConvertFrom-Json);$tb=$p.NextSibling;while($tb-and$tb.LocalName-ne'tbl'){$tb=$tb.NextSibling};if(!$tb){continue};$tp=$tb.SelectSingleNode('./w:tblPr',$n);if(!$tp){$tp=$x.CreateElement('w','tblPr',$u);[void]$tb.PrependChild($tp)};$old=$tp.SelectSingleNode('./w:tblBorders',$n);if($old){[void]$tp.RemoveChild($old)};if($s.border-ne'none'){$bd=$x.CreateElement('w','tblBorders',$u);$names=@('top','left','bottom','right');if($s.border-eq'grid'){$names+=@('insideH','insideV')};foreach($nn in $names){$q=$x.CreateElement('w',$nn,$u);$q.SetAttribute('val',$u,'single');$q.SetAttribute('sz',$u,'8');$q.SetAttribute('color',$u,'808080');[void]$bd.AppendChild($q)};[void]$tp.AppendChild($bd)};$rows=@($tb.SelectNodes('./w:tr',$n));$orig=New-Object Collections.ArrayList;foreach($rr in $rows){[void]$orig.Add(@($rr.SelectNodes('./w:tc',$n)))};for($y=0;$y-lt$rows.Count;$y++){if($y-lt[int]$s.header_rows){$rp=$rows[$y].SelectSingleNode('./w:trPr',$n);if(!$rp){$rp=$x.CreateElement('w','trPr',$u);[void]$rows[$y].PrependChild($rp)};$hh=$x.CreateElement('w','tblHeader',$u);$hh.SetAttribute('val',$u,'true');[void]$rp.AppendChild($hh)};$cs=@($rows[$y].SelectNodes('./w:tc',$n));for($ci=0;$ci-lt$cs.Count;$ci++){if($y-ge$s.cells.Count-or$ci-ge$s.cells[$y].Count){break};$sp=$s.cells[$y][$ci];$cp=$cs[$ci].SelectSingleNode('./w:tcPr',$n);if(!$cp){$cp=$x.CreateElement('w','tcPr',$u);[void]$cs[$ci].PrependChild($cp)};$fill=switch($sp.style){accent{'D9EAF7'}warning{'FFF2CC'}note{'E2F0D9'}header{'D9E1F2'}default{$null}};if($fill){$sh=$x.CreateElement('w','shd',$u);$sh.SetAttribute('val',$u,'clear');$sh.SetAttribute('fill',$u,$fill);[void]$cp.AppendChild($sh)};if($sp.border-and$sp.border-ne'inherit'){$ob=$cp.SelectSingleNode('./w:tcBorders',$n);if($ob){[void]$cp.RemoveChild($ob)};if($sp.border-ne'none'){$cb=$x.CreateElement('w','tcBorders',$u);foreach($nn in @('top','left','bottom','right')){$q=$x.CreateElement('w',$nn,$u);$q.SetAttribute('val',$u,'single');$q.SetAttribute('sz',$u,$(if($sp.border-eq'thick'){'24'}else{'8'}));$q.SetAttribute('color',$u,'000000');[void]$cb.AppendChild($q)};[void]$cp.AppendChild($cb)}}}};for($yy=0;$yy-lt$s.rows;$yy++){for($xx=0;$xx-lt$s.cols;$xx++){$sp=$s.cells[$yy][$xx];if([int]$sp.rowspan-gt1-or[int]$sp.colspan-gt1){for($ry=$yy;$ry-lt$yy+[int]$sp.rowspan;$ry++){$base=$orig[$ry][$xx];$cp=$base.SelectSingleNode('./w:tcPr',$n);if(!$cp){$cp=$x.CreateElement('w','tcPr',$u);[void]$base.PrependChild($cp)};if([int]$sp.colspan-gt1){$gs=$x.CreateElement('w','gridSpan',$u);$gs.SetAttribute('val',$u,[string]$sp.colspan);[void]$cp.AppendChild($gs)};if([int]$sp.rowspan-gt1){$vm=$x.CreateElement('w','vMerge',$u);$vm.SetAttribute('val',$u,$(if($ry-eq$yy){'restart'}else{'continue'}));[void]$cp.AppendChild($vm)};for($rx=$xx+[int]$sp.colspan-1;$rx-gt$xx;$rx--){$gone=$orig[$ry][$rx];if($gone.ParentNode){[void]$gone.ParentNode.RemoveChild($gone)}}}}}};foreach($run in @($p.SelectNodes('.//w:r',$n))){$rp=$run.SelectSingleNode('./w:rPr',$n);if(!$rp){$rp=$x.CreateElement('w','rPr',$u);[void]$run.PrependChild($rp)};$vv=$x.CreateElement('w','vanish',$u);[void]$rp.AppendChild($vv)}}};
+foreach($p in @($x.SelectNodes('//w:p',$n))){$v=($p.SelectNodes('.//w:t',$n)|%%{$_.InnerText})-join'';if($v-match'WORDVIM_TABLE_META_([0-9A-Fa-f]+)'){$h=$Matches[1];$a=for($i=0;$i-lt$h.Length;$i+=2){[Convert]::ToByte($h.Substring($i,2),16)};$s=([Text.Encoding]::UTF8.GetString($a)|ConvertFrom-Json);$tb=$p.NextSibling;while($tb-and$tb.LocalName-ne'tbl'){$tb=$tb.NextSibling};if(!$tb){continue};$tp=$tb.SelectSingleNode('./w:tblPr',$n);if(!$tp){$tp=$x.CreateElement('w','tblPr',$u);[void]$tb.PrependChild($tp)};$old=$tp.SelectSingleNode('./w:tblBorders',$n);if($old){[void]$tp.RemoveChild($old)};if($s.border-ne'none'){$bd=$x.CreateElement('w','tblBorders',$u);$names=@('top','left','bottom','right');if($s.border-eq'grid'){$names+=@('insideH','insideV')};foreach($nn in $names){$q=$x.CreateElement('w',$nn,$u);$q.SetAttribute('val',$u,'single');$q.SetAttribute('sz',$u,'8');$q.SetAttribute('color',$u,'808080');[void]$bd.AppendChild($q)};[void]$tp.AppendChild($bd)};$rows=@($tb.SelectNodes('./w:tr',$n));$orig=New-Object Collections.ArrayList;foreach($rr in $rows){[void]$orig.Add(@($rr.SelectNodes('./w:tc',$n)))};for($y=0;$y-lt$rows.Count;$y++){if($y-lt[int]$s.header_rows){$rp=$rows[$y].SelectSingleNode('./w:trPr',$n);if(!$rp){$rp=$x.CreateElement('w','trPr',$u);[void]$rows[$y].PrependChild($rp)};$hh=$x.CreateElement('w','tblHeader',$u);$hh.SetAttribute('val',$u,'true');[void]$rp.AppendChild($hh)};$cs=@($rows[$y].SelectNodes('./w:tc',$n));for($ci=0;$ci-lt$cs.Count;$ci++){if($y-ge$s.cells.Count-or$ci-ge$s.cells[$y].Count){break};$sp=$s.cells[$y][$ci];if($sp.word_style_id){foreach($pp in @($cs[$ci].SelectNodes('./w:p',$n))){$pr=$pp.SelectSingleNode('./w:pPr',$n);if(!$pr){$pr=$x.CreateElement('w','pPr',$u);[void]$pp.PrependChild($pr)};$ps=$pr.SelectSingleNode('./w:pStyle',$n);if(!$ps){$ps=$x.CreateElement('w','pStyle',$u);[void]$pr.PrependChild($ps)};$ps.SetAttribute('val',$u,[string]$sp.word_style_id)}};$cp=$cs[$ci].SelectSingleNode('./w:tcPr',$n);if(!$cp){$cp=$x.CreateElement('w','tcPr',$u);[void]$cs[$ci].PrependChild($cp)};$fill=switch($sp.style){accent{'D9EAF7'}warning{'FFF2CC'}note{'E2F0D9'}header{'D9E1F2'}default{$null}};if($fill){$sh=$x.CreateElement('w','shd',$u);$sh.SetAttribute('val',$u,'clear');$sh.SetAttribute('fill',$u,$fill);[void]$cp.AppendChild($sh)};if($sp.border-and$sp.border-ne'inherit'){$ob=$cp.SelectSingleNode('./w:tcBorders',$n);if($ob){[void]$cp.RemoveChild($ob)};if($sp.border-ne'none'){$cb=$x.CreateElement('w','tcBorders',$u);foreach($nn in @('top','left','bottom','right')){$q=$x.CreateElement('w',$nn,$u);$q.SetAttribute('val',$u,'single');$q.SetAttribute('sz',$u,$(if($sp.border-eq'thick'){'24'}else{'8'}));$q.SetAttribute('color',$u,'000000');[void]$cb.AppendChild($q)};[void]$cp.AppendChild($cb)}}}};for($yy=0;$yy-lt$s.rows;$yy++){for($xx=0;$xx-lt$s.cols;$xx++){$sp=$s.cells[$yy][$xx];if([int]$sp.rowspan-gt1-or[int]$sp.colspan-gt1){for($ry=$yy;$ry-lt$yy+[int]$sp.rowspan;$ry++){$base=$orig[$ry][$xx];$cp=$base.SelectSingleNode('./w:tcPr',$n);if(!$cp){$cp=$x.CreateElement('w','tcPr',$u);[void]$base.PrependChild($cp)};if([int]$sp.colspan-gt1){$gs=$x.CreateElement('w','gridSpan',$u);$gs.SetAttribute('val',$u,[string]$sp.colspan);[void]$cp.AppendChild($gs)};if([int]$sp.rowspan-gt1){$vm=$x.CreateElement('w','vMerge',$u);$vm.SetAttribute('val',$u,$(if($ry-eq$yy){'restart'}else{'continue'}));[void]$cp.AppendChild($vm)};for($rx=$xx+[int]$sp.colspan-1;$rx-gt$xx;$rx--){$gone=$orig[$ry][$rx];if($gone.ParentNode){[void]$gone.ParentNode.RemoveChild($gone)}}}}}};foreach($run in @($p.SelectNodes('.//w:r',$n))){$rp=$run.SelectSingleNode('./w:rPr',$n);if(!$rp){$rp=$x.CreateElement('w','rPr',$u);[void]$run.PrependChild($rp)};$vv=$x.CreateElement('w','vanish',$u);[void]$rp.AppendChild($vv)}}};
 # Persist table models outside the document text in a standard OOXML custom
 # document property.  Other editors may display hidden Word paragraphs, but
 # custom properties never become document body text.
@@ -286,7 +356,53 @@ $docRels=$z.GetEntry('word/_rels/document.xml.rels');if($docRels){$dr=New-Object
 ]],path)
  return require("wordvim.runtime").run_powershell(ps)
 end
+local copied_table
+function M.copy()
+ local b=vim.api.nvim_get_current_buf()
+ local valid,err=M.validate(b);assert(valid,err)
+ local it=current(b)
+ if not it then vim.notify('Place cursor inside a table',vim.log.levels.WARN);return end
+ copied_table=vim.deepcopy(it.spec)
+ vim.notify('Table copied with styles and merged cells')
+end
+function M.cut()
+ local b=vim.api.nvim_get_current_buf();local it=current(b)
+ if not it then vim.notify('Place cursor inside a table',vim.log.levels.WARN);return end
+ M.copy()
+ local a,z=bounds(b,it);local st=state(b);st.updating=true
+ st.items[it.id]=nil
+ vim.api.nvim_buf_del_extmark(b,ns,it.mark);vim.api.nvim_buf_del_extmark(b,ns,it.finish)
+ vim.api.nvim_buf_set_lines(b,a,z,false,{})
+ st.updating=false
+ vim.cmd('syntax sync fromstart')
+ vim.notify('Table cut. Move cursor and use :WordTablePaste')
+end
+function M.insert_fragment(lines)
+ local b=vim.api.nvim_get_current_buf()
+ assert(vim.b[b].wordvim_docx,'Open a DOCX document first')
+ local rendered,specs=M.extract(lines)
+ local row=vim.api.nvim_win_get_cursor(0)[1]
+ -- Paste outside a table, never into its protected structure.
+ local it=current(b)
+ if it then local _,last=bounds(b,it);row=last end
+ local block={''};vim.list_extend(block,rendered);block[#block+1]=''
+ local st=state(b);st.updating=true
+ vim.api.nvim_buf_set_lines(b,row,row,false,block)
+ local index=1
+ for offset,line in ipairs(rendered) do
+  if line:find(LABEL,1,true) and specs[index] then attach(b,row+offset,vim.deepcopy(specs[index]));index=index+1 end
+ end
+ st.updating=false
+ vim.cmd('syntax sync fromstart')
+end
+function M.paste()
+ if not copied_table then vim.notify('Use :WordTableCopy first',vim.log.levels.WARN);return end
+ M.insert_fragment(html(vim.deepcopy(copied_table)))
+end
 function M.setup()
+ vim.api.nvim_create_user_command("WordTableCopy",M.copy,{})
+ vim.api.nvim_create_user_command("WordTableCut",M.cut,{})
+ vim.api.nvim_create_user_command("WordTablePaste",M.paste,{})
  vim.keymap.set("n","<leader>wt",function()M.open()end,{silent=true,desc="Open Word table editor"})
  vim.api.nvim_create_user_command("WordTable",function(o)M.open(o.fargs[1],o.fargs[2])end,{nargs="*",desc="Create or edit a Word table"})end
 return M

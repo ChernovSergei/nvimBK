@@ -105,6 +105,25 @@ $pageBreakMarker = '%s'
 $zip = $null
 
 try {
+    # Rebuild the disposable ZIP before Update: Apache POI streaming ZIP64
+    # descriptors can otherwise survive .NET Update with inconsistent sizes.
+    $normalized = $path + '.normalized'
+    $sourceZip = [System.IO.Compression.ZipFile]::OpenRead($path)
+    try {
+      $targetZip = [System.IO.Compression.ZipFile]::Open($normalized, 'Create')
+      try {
+        foreach ($part in $sourceZip.Entries) {
+          $fresh = $targetZip.CreateEntry($part.FullName)
+          $inputStream = $part.Open()
+          try {
+            $outputStream = $fresh.Open()
+            try { $inputStream.CopyTo($outputStream) } finally { $outputStream.Dispose() }
+          } finally { $inputStream.Dispose() }
+        }
+      } finally { $targetZip.Dispose() }
+    } finally { $sourceZip.Dispose() }
+    [System.IO.File]::Copy($normalized, $path, $true)
+    [System.IO.File]::Delete($normalized)
     $zip = [System.IO.Compression.ZipFile]::Open($path, 'Update')
     $entry = $zip.GetEntry('word/document.xml')
     if ($null -eq $entry) { throw 'word/document.xml not found' }
@@ -117,6 +136,34 @@ try {
     $nsUri = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
     $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
     $ns.AddNamespace('w', $nsUri)
+    # Pandoc consumes Title/Subtitle as document metadata, which the fragment
+    # Markdown writer omits. Alias these styles only in the disposable copy
+    # so the paragraphs remain in their original body positions.
+    $stylesEntry=$zip.GetEntry('word/styles.xml')
+    if($stylesEntry){
+      $sr=New-Object IO.StreamReader($stylesEntry.Open())
+      [xml]$sx=$sr.ReadToEnd();$sr.Close()
+      $sn=New-Object Xml.XmlNamespaceManager($sx.NameTable);$sn.AddNamespace('w',$nsUri)
+      foreach($style in @($sx.SelectNodes('//w:style[@w:type="paragraph"]',$sn))){
+        $name=$style.SelectSingleNode('w:name',$sn)
+        if($name -and $name.GetAttribute('val',$nsUri) -in @('Title','Subtitle','title','subtitle')){
+          $old=$style.GetAttribute('styleId',$nsUri)
+          $alias='WordVimBody'+$name.GetAttribute('val',$nsUri).ToLowerInvariant()
+          [void]$style.SetAttribute('styleId',$nsUri,$alias)
+          [void]$name.SetAttribute('val',$nsUri,$alias)
+          foreach($pstyle in @($xml.SelectNodes('//w:pStyle',$ns))){
+            if($pstyle.GetAttribute('val',$nsUri) -eq $old){[void]$pstyle.SetAttribute('val',$nsUri,$alias)}
+          }
+        }
+      }
+      $stylesEntry.Delete();$stylesEntry=$zip.CreateEntry('word/styles.xml')
+      $sw=New-Object IO.StreamWriter($stylesEntry.Open(),(New-Object Text.UTF8Encoding($false)))
+      $sw.Write($sx.OuterXml);$sw.Close()
+    }
+    @{lists=($null -ne $xml.SelectSingleNode('//w:numPr',$ns));
+      indents=($null -ne $xml.SelectSingleNode('//w:ind | //w:tab',$ns));
+      fields=($null -ne $xml.SelectSingleNode('//w:fldSimple | //w:fldChar | //w:instrText',$ns))} | ConvertTo-Json -Compress
+
 
     # Rehydrate metadata only in the disposable Pandoc input copy.  The saved
     # DOCX keeps it in a standard custom property, never in visible body text.
@@ -131,7 +178,10 @@ try {
         $stored=$models.SelectSingleNode('/cp:Properties/cp:property[@name="WordVimTables"]/vt:lpwstr',$customNs)
         if($stored){
           $json=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($stored.InnerText))
-          $records=@($json|ConvertFrom-Json)
+          # PowerShell 5.1 emits a JSON array as one pipeline object;
+          # wrapping that pipeline in @() would create a nested array.
+          $records=ConvertFrom-Json -InputObject $json
+          if ($null -eq $records) { $records=@() }
           $tables=@($xml.SelectNodes('//w:tbl',$ns))
           foreach($record in $records){
             $index=[int]$record.index
@@ -324,7 +374,8 @@ finally {
     return nil, output
   end
 
-  return temp_docx
+  local decoded,features=pcall(vim.json.decode,output)
+  return temp_docx,nil,decoded and features or nil
 end
 
 -- Remove the temporary marker text from the generated DOCX while keeping the
@@ -2088,7 +2139,7 @@ local function open_docx(args)
   vim.fn.mkdir(media_dir, "p")
   vim.b[buf].wordvim_media_dir = media_dir
 
-  local pandoc_docx, marker_err =
+  local pandoc_docx, marker_err, features =
     make_pandoc_read_copy_with_empty_markers(docx)
 
   if not pandoc_docx then
@@ -2131,6 +2182,10 @@ local function open_docx(args)
   end
 
   local raw_lines = paragraphs.normalize_import(vim.fn.readfile(temp_md))
+  for i,line in ipairs(raw_lines) do
+    raw_lines[i]=line:gsub('custom%-style="WordVimBodytitle"','custom-style="Title"')
+      :gsub('custom%-style="WordVimBodysubtitle"','custom-style="Subtitle"')
+  end
   vim.fn.delete(temp_md)
 
   -- Restore real inline Word tabs that were exposed to Pandoc as a safe
@@ -2224,7 +2279,7 @@ local function open_docx(args)
   -- Pandoc may flatten nested DOCX list levels in Markdown.
   -- Restore the authoritative list level directly from w:ilvl so
   -- Neovim shows • / ◦ / ▪ / ▫ correctly after reopening.
-  lists.load_levels_from_docx(buf, docx)
+  if not features or features.lists then lists.load_levels_from_docx(buf, docx) end
 
   for _, item in ipairs(assignments) do
     styles.set_paragraph_style(buf, item.row, item.style)
@@ -2232,7 +2287,7 @@ local function open_docx(args)
 
   -- Read real leading Word TABs and paragraph left indents,
   -- then display both visually without arrow symbols.
-  indents.load_from_docx(buf, docx)
+  if not features or features.indents then indents.load_from_docx(buf, docx) else indents.reset_buffer(buf) end
 
   -- Pandoc may expose Word paragraph indentation as visible Markdown
   -- blockquote markers (">").  The true indent has already been read
@@ -2262,7 +2317,7 @@ local function open_docx(args)
   pagesettings.load_from_docx(buf, docx)
 
   -- Restore Word Caption / REF / PAGEREF metadata after Pandoc conversion.
-  crossrefs.restore_from_docx(buf, docx)
+  crossrefs.restore_from_docx(buf, docx, features and not features.fields)
 
   -- All buffer-rewriting import/cleanup passes are complete now.
   -- Create the TOC anchor only at this point so right_gravity=true can
@@ -2292,6 +2347,8 @@ local function open_docx(args)
 
   -- Enable Word-like Enter / Shift+Enter behavior.
   paragraphs.attach(buf)
+  vim.keymap.set('n','<A-Up>','<cmd>WordListMoveUp<CR>',{buffer=buf,desc='Move list item up'})
+  vim.keymap.set('n','<A-Down>','<cmd>WordListMoveDown<CR>',{buffer=buf,desc='Move list item down'})
 
   -- Insert mode: Word TABs. Normal mode: paragraph indent.
   indents.attach(buf)

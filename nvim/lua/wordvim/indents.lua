@@ -581,24 +581,7 @@ function M.load_from_docx(buf, docx)
     vim.fn.tempname() .. ".docx"
 
   -- Copy the live DOCX first so LibreOffice/Word can keep the original open.
-  local source_path = ps_escape(docx)
-  local target_path = ps_escape(temp_docx)
-
-  local copy_script = string.format([[
-$source = '%s'
-$target = '%s'
-
-try {
-    Copy-Item -LiteralPath $source -Destination $target -Force
-}
-catch {
-    Write-Output $_.Exception.Message
-    exit 1
-}
-]], source_path, target_path)
-
-  local copied, copy_output =
-    run_powershell(copy_script)
+  local copied, copy_output = vim.uv.fs_copyfile(docx,temp_docx)
 
   if not copied then
     pcall(vim.fn.delete, temp_docx)
